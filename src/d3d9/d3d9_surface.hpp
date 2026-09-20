@@ -1,6 +1,7 @@
 #pragma once
 
 #include "com/com_object.hpp"
+#include "d3d9_debug_trace.hpp"
 #include "dxmt_texture.hpp"
 #include <d3d9.h>
 #include <cstdlib>
@@ -40,6 +41,11 @@ public:
   HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final;
   HRESULT STDMETHODCALLTYPE UnlockRect() final;
   HRESULT STDMETHODCALLTYPE GetDC(HDC *) final {
+    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
+      DebugTraceBudget("MSE_TRACE_FILL")--;
+      Logger::warn(str::format("D3D9DC: D3D9Surface::GetDC called pool=", (int)pool_, " ",
+                               width_, "x", height_, " fmt=", (int)format_));
+    }
     static bool warned = false;
     if (!warned) { warned = true; Logger::warn("D3D9: surface GetDC is not implemented"); }
     return D3DERR_INVALIDCALL;

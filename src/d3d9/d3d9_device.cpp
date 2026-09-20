@@ -1,4 +1,6 @@
 
+#include <cstdarg>
+
 #include "d3d9_device.hpp"
 #include "d3d9_buffer.hpp"
 #include "d3d9_format.hpp"
@@ -22,6 +24,24 @@
 #include "wsi_window.hpp"
 
 namespace dxmt {
+
+// Debug tracing: MSE_TRACE_API guards a numbered line so calls from different
+// entry points stay ordered relative to each other.
+#define MSE_TRACE_FILL(...)                                                     \
+  do {                                                                         \
+    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {                              \
+      DebugTraceBudget("MSE_TRACE_FILL")--;                                    \
+      Logger::info(str::format("#", DebugTraceSeq(), " FILL ", __VA_ARGS__));  \
+    }                                                                          \
+  } while (0)
+
+#define MSE_TRACE_API(...)                                                     \
+  do {                                                                         \
+    if (DebugTraceBudget("MSE_TRACE_API") > 0) {                               \
+      DebugTraceBudget("MSE_TRACE_API")--;                                     \
+      Logger::info(str::format("#", DebugTraceSeq(), " ", __VA_ARGS__));       \
+    }                                                                          \
+  } while (0)
 
 static D3DMATRIX IdentityMatrix() {
   D3DMATRIX m = {};
@@ -516,6 +536,9 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderTarget(DWORD RenderTargetIndex, I
   current_rt_view_ = rtView;
   current_rt_format_ = rtFormat;
 
+  MSE_TRACE_API("SetRenderTarget0 ", (void *)pRenderTarget, " texSurface=", isTexSurface ? 1 : 0,
+                " size=", current_rt_ ? (int)current_rt_->width() : -1, "x",
+                current_rt_ ? (int)current_rt_->height() : -1);
 
   // Update viewport to match new render target size
   viewport_.X = 0;
@@ -545,6 +568,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::EndScene() { return S_OK; }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
     DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) {
+  MSE_TRACE_API("Clear flags=0x", (unsigned)Flags, " color=0x", (unsigned)Color, " rects=", Count);
   if (!(Flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
 
@@ -694,6 +718,19 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderState(D3DRENDERSTATETYPE State, D
 
 // Transform state
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) {
+  if (getenv("MSE_DEBUG_XFORM") && pMatrix) {
+    static int n = 0;
+    if (n++ < 24) {
+      char buf[400];
+      snprintf(buf, sizeof(buf),
+               "[%.3f %.3f %.3f %.3f][%.3f %.3f %.3f %.3f][%.3f %.3f %.3f %.3f][%.3f %.3f %.3f %.3f]",
+               pMatrix->_11, pMatrix->_12, pMatrix->_13, pMatrix->_14,
+               pMatrix->_21, pMatrix->_22, pMatrix->_23, pMatrix->_24,
+               pMatrix->_31, pMatrix->_32, pMatrix->_33, pMatrix->_34,
+               pMatrix->_41, pMatrix->_42, pMatrix->_43, pMatrix->_44);
+      Logger::info(str::format("D3D9XF: SetTransform state=", (int)State, " ", buf));
+    }
+  }
   if (!pMatrix) return D3DERR_INVALIDCALL;
   uint32_t idx = TransformIndex(State);
   if (idx >= 512) return D3DERR_INVALIDCALL;
@@ -877,6 +914,19 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
   }
 
   *ppTexture = ref(new D3D9Texture2D(this, Width, Height, Levels, Format, std::move(texture), viewKey));
+  if (DebugTraceBudget("MSE_TRACE_TEX") > 0) {
+    DebugTraceBudget("MSE_TRACE_TEX")--;
+    static void *exeBase = nullptr, *d3dxBase = nullptr;
+    if (!exeBase) {
+      exeBase = (void *)GetModuleHandleA(nullptr);
+      d3dxBase = (void *)GetModuleHandleA("d3dx9_43.dll");
+    }
+    Logger::info(str::format("#", DebugTraceSeq(), " CreateTexture ", Width, "x", Height, " lv=",
+                             mipLevels, " fmt=", (int)Format, " usage=0x", (unsigned)Usage,
+                             " pool=", (int)Pool, " rt=", isRenderTarget ? 1 : 0, " -> tex=",
+                             (void *)*ppTexture, " caller=", __builtin_return_address(0),
+                             " exe=", exeBase, " d3dx9=", d3dxBase));
+  }
   return S_OK;
 }
 
@@ -888,6 +938,21 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTextu
   auto *tex = static_cast<D3D9Texture2D *>(pTexture);
   if (bound_textures_[Stage].ptr() == tex) return S_OK; // no-op
   bound_textures_[Stage] = tex;
+  if (tex) {
+    char stats[256] = "null";
+    tex->debugStats(stats, sizeof(stats));
+    MSE_TRACE_API("SetTexture stage=", Stage, " tex=", (void *)tex, " ", stats);
+    if (DebugTraceBudget("MSE_TRACE_BINDNZ") > 0) {
+      size_t nz = tex->nonZeroBytes();
+      if (nz) {
+        DebugTraceBudget("MSE_TRACE_BINDNZ")--;
+        Logger::info(str::format("D3D9BINDNZ: stage=", Stage, " tex=", (void *)tex, " ",
+                                 tex->width(), "x", tex->height(), " fmt=", (int)tex->format(),
+                                 " nz=", (double)nz, " of ",
+                                 (double)(tex->width() * tex->height() * 4)));
+      }
+    }
+  }
   if (tex)
     tex_bound_mask_ |= (1u << Stage);
   else
@@ -970,6 +1035,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateDepthStencilSurface(
     UINT Width, UINT Height, D3DFORMAT Format,
     D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
     BOOL Discard, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle) {
+  MSE_TRACE_API("CreateDepthStencilSurface ", Width, "x", Height, " fmt=", (int)Format);
   if (!ppSurface) return D3DERR_INVALIDCALL;
 
   auto mtlFormat = ConvertD3D9DepthFormat(Format);
@@ -1632,6 +1698,11 @@ obj_handle_t D3D9Device::CreatePSO() {
       if (effFog != D3DFOG_NONE)
         psFogMode = 1; // vertex fog (FF VS computes it)
     }
+  }
+
+  if (getenv("MSE_DEBUG_NOFOG")) {
+    alphaFunc = 0;
+    psFogMode = 0;
   }
 
   // Resolve PS function handle (avoid WMT::Reference retain/release on hot path)
@@ -2357,6 +2428,10 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   bool depthEnabled = render_states_[D3DRS_ZENABLE] != D3DZB_FALSE && depth_stencil_;
   cap.depth_enable = depthEnabled;
   cap.depth_write = render_states_[D3DRS_ZWRITEENABLE] != FALSE;
+  if (getenv("MSE_DEBUG_NOZW"))
+    cap.depth_write = false;
+  if (getenv("MSE_DEBUG_NOZTEST"))
+    cap.depth_enable = false;
   cap.depth_func = ConvertCompareFunc(render_states_[D3DRS_ZFUNC]);
   cap.depth_tex = depth_stencil_;
   cap.depth_view = depth_stencil_view_;
@@ -2415,12 +2490,19 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
 #endif
   // Upload dirty texture data via staging buffer + blit command to avoid
   // replaceRegion race (CPU overwrites shared texture while GPU still reads it)
+  bool forceUpload = getenv("MSE_DEBUG_ALWAYSUPLOAD") != nullptr;
   for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
     uint32_t stage = __builtin_ctz(mask);
     auto *tex = bound_textures_[stage].ptr();
+    if (forceUpload)
+      tex->markAllDirty();
     if (tex->isAnyDirty()) {
       auto &queue = dxmt_device_->queue();
       tex->uploadDirtyLevelsStaged(tex->texture(), queue);
+      static int forced = 0;
+      if (forceUpload && forced++ < 8)
+        Logger::info(str::format("D3D9UP: forced re-upload of ", tex->width(), "x", tex->height(),
+                                 " fmt=", (int)tex->format(), " nz=", (double)tex->nonZeroBytes()));
     }
   }
 #ifdef DXMT_PERF
@@ -2479,6 +2561,16 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
       }
     }
     tex_dirty_ = false;
+
+    if (getenv("MSE_DEBUG_NOTEX")) {
+      // Debug: sample a known-white texture instead of the title's own data.
+      for (uint8_t i = 0; i < shadow_cap_.texCaptureCount; i++) {
+        auto &tc = shadow_cap_.texCaptures[i];
+        tc.texture = default_white_tex_.ptr();
+        tc.viewKey = default_white_view_;
+        shadow_cap_.samplerHandles[tc.stage] = default_sampler_;
+      }
+    }
 
     // Compute fingerprint while shadow is freshly built
     uint64_t h = shadow_cap_.texCaptureCount;
@@ -2668,6 +2760,27 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
   if (!transientVB.cpu_ptr)
     return D3DERR_INVALIDCALL;
   memcpy(transientVB.cpu_ptr, pVertexStreamZeroData, dataSize);
+  MSE_TRACE_API("DrawPrimitiveUP type=", (int)PrimitiveType, " prim=", PrimitiveCount,
+                " verts=", sourceVertexCount, " stride=", VertexStreamZeroStride,
+                " texmask=0x", (unsigned)tex_bound_mask_);
+  LogDrawDebugUp(PrimitiveType, PrimitiveCount, pVertexStreamZeroData,
+                 VertexStreamZeroStride, sourceVertexCount);
+  if (getenv("MSE_DEBUG_FORCEQUAD") && VertexStreamZeroStride >= 20) {
+    // Debug: force a visible full-screen quad by overwriting position + diffuse
+    // so the fixed-function pipeline can be observed without the title's own
+    // fade-in colours.
+    auto *v = static_cast<uint8_t *>(transientVB.cpu_ptr);
+    const float xs[3] = {0.0f, 1280.0f, 1280.0f};
+    const float ys[3] = {0.0f, 0.0f, 720.0f};
+    for (UINT i = 0; i < sourceVertexCount; i++) {
+      uint8_t *p = v + (size_t)i * VertexStreamZeroStride;
+      float x = xs[i % 3] + (i >= 3 ? 0.0f : 0.0f);
+      float y = ys[i % 3] + (i >= 3 ? 720.0f : 0.0f);
+      memcpy(p + 0, &x, 4);
+      memcpy(p + 4, &y, 4);
+      *(uint32_t *)(p + 16) = 0xFFFFFFFFu; // diffuse (XYZRHW + DIFFUSE)
+    }
+  }
 
   // Save and set stream source
   auto savedVB = stream_sources_[0];
@@ -2856,8 +2969,18 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
 
   FlushDrawBatch();
 
+  DumpBackbufferIfRequested();
+
   auto &queue = dxmt_device_->queue();
   auto chunk = queue.CurrentChunk();
+
+  if (getenv("MSE_DEBUG_NOPRESENT")) {
+    // Debug: keep the frame pipeline alive but skip the actual presentation so
+    // the window keeps whatever the guest painted with GDI.
+    queue.CommitCurrentChunk();
+    queue.PresentBoundary();
+    return S_OK;
+  }
 
   chunk->emitcc([
     this,
@@ -2877,6 +3000,183 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
   return S_OK;
 }
 
+
+
+// Debug aid: dump the presented backbuffer so a black window can be traced to
+// either the draw path or the presentation path.  Enabled with
+// MSE_DUMP_BACKBUFFER=1; writes Z:/tmp/mse-backbuffer-<n>.raw on selected
+// frames.
+// Debug aid: log everything that decides whether a fixed-function DrawPrimitiveUP
+// can produce pixels — vertex data as the title supplied it, the fixed-function
+// keys the draw resolved to, and the CPU-side content of every bound texture.
+// Enabled with MSE_DUMP_DRAW=<n> (number of draws to log).
+void D3D9Device::LogDrawDebugUp(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount,
+                                const void *vbData, UINT stride, UINT vertexCount) {
+  static int budget = -1, counter = 0, interval = 0;
+  if (budget < 0) {
+    const char *env = getenv("MSE_DUMP_DRAW");
+    budget = env ? atoi(env) : 0;
+    const char *every = getenv("MSE_DUMP_DRAW_EVERY");
+    interval = every ? atoi(every) : 0;
+  }
+  if (!budget && !interval)
+    return;
+  counter++;
+  if (budget > 0)
+    budget--;
+  else if (!interval || (counter % interval) != 0)
+    return;
+  if (!vbData || !stride)
+    return;
+
+  char buf[2048];
+  size_t off = 0;
+  auto add = [&](const char *fmt, ...) {
+    if (off >= sizeof(buf))
+      return;
+    va_list ap;
+    va_start(ap, fmt);
+    off += (size_t)vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
+    va_end(ap);
+    if (off > sizeof(buf))
+      off = sizeof(buf);
+  };
+
+  auto &elements = current_vdecl_->elements();
+  auto *bytes = static_cast<const uint8_t *>(vbData);
+
+  add("DRAWUP type=%d prim=%u stride=%u fvf=0x%08x vs=%s ps=%s vp=%.0f,%.0f,%.0fx%.0f",
+      (int)PrimitiveType, PrimitiveCount, stride, (unsigned)current_fvf_,
+      current_vs_ ? "custom" : "FF", current_ps_ ? "custom" : "FF",
+      (double)viewport_.X, (double)viewport_.Y, (double)viewport_.Width,
+      (double)viewport_.Height);
+
+  // Vertex layout as the fixed-function VS will read it.
+  add(" | decl=");
+  uint32_t numElements = elements.size() ? (uint32_t)elements.size() - 1 : 0;
+  for (uint32_t i = 0; i < numElements; i++) {
+    auto &e = elements[i];
+    add("%u:%u/%u@%u:t%d ", i, (unsigned)e.Usage, (unsigned)e.UsageIndex,
+        (unsigned)e.Offset, (int)e.Type);
+  }
+
+  // The vertices themselves.
+  UINT sampleCount = vertexCount < 3 ? vertexCount : 3;
+  for (UINT v = 0; v < sampleCount; v++) {
+    auto *p = bytes + (size_t)v * stride;
+    add(" | v%u=", v);
+    for (uint32_t i = 0; i < numElements; i++) {
+      auto &e = elements[i];
+      const uint8_t *ep = p + e.Offset;
+      switch (e.Type) {
+      case D3DDECLTYPE_FLOAT1:
+        add("f1(%.3g) ", *(const float *)ep);
+        break;
+      case D3DDECLTYPE_FLOAT2:
+        add("f2(%.3g,%.3g) ", ((const float *)ep)[0], ((const float *)ep)[1]);
+        break;
+      case D3DDECLTYPE_FLOAT3:
+        add("f3(%.3g,%.3g,%.3g) ", ((const float *)ep)[0], ((const float *)ep)[1],
+            ((const float *)ep)[2]);
+        break;
+      case D3DDECLTYPE_FLOAT4:
+        add("f4(%.3g,%.3g,%.3g,%.3g) ", ((const float *)ep)[0], ((const float *)ep)[1],
+            ((const float *)ep)[2], ((const float *)ep)[3]);
+        break;
+      case D3DDECLTYPE_D3DCOLOR:
+        add("col(%08x) ", *(const uint32_t *)ep);
+        break;
+      default:
+        add("t%d(?) ", (int)e.Type);
+        break;
+      }
+    }
+  }
+
+  add(" | blend=%u src=%u dst=%u op=%u aSrc=%u aDst=%u | z=%d zw=%d zf=%u | alphaTest=%d func=%u ref=%u | cull=%u cw=0x%x",
+      (unsigned)render_states_[D3DRS_ALPHABLENDENABLE], (unsigned)render_states_[D3DRS_SRCBLEND],
+      (unsigned)render_states_[D3DRS_DESTBLEND], (unsigned)render_states_[D3DRS_BLENDOP],
+      (unsigned)render_states_[D3DRS_SRCBLENDALPHA], (unsigned)render_states_[D3DRS_DESTBLENDALPHA],
+      (int)render_states_[D3DRS_ZENABLE], (int)render_states_[D3DRS_ZWRITEENABLE],
+      (unsigned)render_states_[D3DRS_ZFUNC], (int)render_states_[D3DRS_ALPHATESTENABLE],
+      (unsigned)render_states_[D3DRS_ALPHAFUNC], (unsigned)render_states_[D3DRS_ALPHAREF],
+      (unsigned)render_states_[D3DRS_CULLMODE], (unsigned)render_states_[D3DRS_COLORWRITEENABLE]);
+
+  // Fixed-function keys: what the VS/PS actually compute for this draw.
+  if (!current_vs_) {
+    FFVSKey vk = BuildFFVSKey();
+    add(" | ffvs tc=%u post=%u fog=%u tci=", vk.tex_coord_count, vk.has_position_t, vk.fog_mode);
+    for (uint8_t i = 0; i < 4; i++)
+      add("%u/", vk.tci_modes[i]);
+    add(" coord=");
+    for (uint8_t i = 0; i < 4; i++)
+      add("%u/", vk.tci_coord_indices[i]);
+    add(" ttf=");
+    for (uint8_t i = 0; i < 4; i++)
+      add("%u/", vk.ttf_modes[i]);
+  }
+  if (!current_ps_) {
+    FFPSKey pk = BuildFFPSKey();
+    add(" | ffps tc=%u alphaTest=%u fog=%u", pk.tex_coord_count, pk.alpha_test_enable,
+        pk.fog_enable);
+    for (int i = 0; i < 4; i++) {
+      auto &s = pk.stages[i];
+      if (s.color_op == D3DTOP_DISABLE) {
+        add(" s%d=disable", i);
+        break;
+      }
+      add(" s%d[op=%u a1=%u a2=%u aop=%u aa1=%u aa2=%u tex=%u tc=%u]", i, s.color_op,
+          s.color_arg1, s.color_arg2, s.alpha_op, s.alpha_arg1, s.alpha_arg2,
+          s.has_texture, s.texcoord_index);
+    }
+  }
+
+  // Bound textures plus a fingerprint of their CPU-side pixels: an all-zero
+  // texture means the title never filled it, not that sampling is broken.
+  add(" | texmask=0x%02x", tex_bound_mask_);
+  for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
+    uint32_t stage = __builtin_ctz(mask);
+    auto *tex = bound_textures_[stage].ptr();
+    char stats[256];
+    tex->debugStats(stats, sizeof(stats));
+    add(" | stage%u=%s", stage, stats);
+  }
+
+  Logger::info(str::format(buf));
+}
+
+// Debug aid: dump the presented backbuffer so a black window can be traced to
+// either the draw path or the presentation path.  Enabled with
+// MSE_DUMP_BACKBUFFER=1; writes Z:/tmp/mse-backbuffer-<n>.raw on selected
+// frames.
+void D3D9Device::DumpBackbufferIfRequested() {
+  static int dump_frames = -1;
+  static int frame_no = 0;
+  if (dump_frames < 0) {
+    const char *env = getenv("MSE_DUMP_BACKBUFFER");
+    dump_frames = env ? atoi(env) : 0;
+  }
+  if (!dump_frames) return;
+  frame_no++;
+  if (frame_no != 2 && frame_no != 60 && frame_no != 300 && frame_no != 900) return;
+  if (!backbuffer_surface_) return;
+
+  D3DLOCKED_RECT locked = {};
+  if (FAILED(backbuffer_surface_->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+    Logger::err("D3D9: backbuffer dump lock failed");
+    return;
+  }
+  char path[128];
+  snprintf(path, sizeof(path), "Z:/tmp/mse-backbuffer-%d.raw", frame_no);
+  if (FILE *fp = fopen(path, "wb")) {
+    for (UINT y = 0; y < present_params_.BackBufferHeight; y++)
+      fwrite(static_cast<const uint8_t *>(locked.pBits) + (size_t)y * locked.Pitch, 1,
+             (size_t)present_params_.BackBufferWidth * 4, fp);
+    fclose(fp);
+    Logger::info(str::format("D3D9: dumped backbuffer frame ", frame_no, " to ", path));
+  }
+  backbuffer_surface_->UnlockRect();
+}
 
 void D3D9Device::UpdateStatistics(const FrameStatisticsContainer &statistics, uint64_t frame_id) {
 #ifdef DXMT_PERF
@@ -2968,6 +3268,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateOffscreenPlainSurface(
   if (Pool != D3DPOOL_SYSTEMMEM) return D3DERR_INVALIDCALL;
 
   *ppSurface = ref(new D3D9Surface(this, Width, Height, Format, Pool));
+  MSE_TRACE_FILL("CreateOffscreenPlainSurface ", Width, "x", Height, " fmt=", (int)Format,
+                " -> ", (void *)*ppSurface);
   return S_OK;
 }
 
@@ -2976,6 +3278,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderTargetData(
     IDirect3DSurface9 *pRenderTarget, IDirect3DSurface9 *pDestSurface) {
   FlushDrawBatch();
   if (!pRenderTarget || !pDestSurface) return D3DERR_INVALIDCALL;
+  MSE_TRACE_FILL("GetRenderTargetData src=", (void *)pRenderTarget, " dst=",
+                (void *)pDestSurface);
 
   auto *dst = static_cast<D3D9Surface *>(pDestSurface);
   if (dst->pool() != D3DPOOL_SYSTEMMEM || !dst->sysMemData())
@@ -3128,6 +3432,8 @@ FFPSKey D3D9Device::BuildFFPSKey() {
   }
   key.specular_enable = render_states_[D3DRS_SPECULARENABLE] ? 1 : 0;
   key.alpha_test_enable = render_states_[D3DRS_ALPHATESTENABLE] ? 1 : 0;
+  if (getenv("MSE_DEBUG_NOALPHATEST"))
+    key.alpha_test_enable = 0;
   key.alpha_test_func = (uint8_t)render_states_[D3DRS_ALPHAFUNC];
   key.fog_enable = render_states_[D3DRS_FOGENABLE] ? 1 : 0;
   return key;
@@ -3348,6 +3654,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateRenderTarget(
   });
 
   *ppSurface = ref(new D3D9Surface(this, texture, viewKey, mtlFormat));
+  MSE_TRACE_API("CreateRenderTarget ", Width, "x", Height, " fmt=", (int)Format,
+                " lockable=", Lockable ? 1 : 0, " -> ", (void *)*ppSurface);
   return S_OK;
 }
 
@@ -3358,6 +3666,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
     D3DTEXTUREFILTERTYPE Filter) {
   FlushDrawBatch();
   if (!pSourceSurface || !pDestSurface) return D3DERR_INVALIDCALL;
+  MSE_TRACE_FILL("StretchRect src=", (void *)pSourceSurface, " dst=", (void *)pDestSurface);
 
   // Extract GPU textures from either D3D9Surface or D3D9TextureSurface
   auto getTexture = [](IDirect3DSurface9 *surf) -> Rc<Texture> {
@@ -3436,6 +3745,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::UpdateTexture(
     IDirect3DBaseTexture9 *pSourceTexture,
     IDirect3DBaseTexture9 *pDestinationTexture) {
   if (!pSourceTexture || !pDestinationTexture) return D3DERR_INVALIDCALL;
+  MSE_TRACE_FILL("UpdateTexture src=", (void *)pSourceTexture, " dst=",
+                (void *)pDestinationTexture);
 
   // Both must be 2D textures
   IDirect3DTexture9 *srcTex2D = nullptr;

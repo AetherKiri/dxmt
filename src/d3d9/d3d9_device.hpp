@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Metal.hpp"
+#include "d3d9_debug_trace.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_buffer.hpp"
@@ -91,15 +92,37 @@ public:
                                                        BOOL Discard, IDirect3DSurface9 **ppSurface,
                                                        HANDLE *pSharedHandle) final;
   HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *, const RECT *,
-                                           IDirect3DSurface9 *, const POINT *) final { static bool w=false; if(!w){Logger::warn("D3D9: stub UpdateSurface");w=true;} return D3DERR_INVALIDCALL; }
+                                           IDirect3DSurface9 *, const POINT *) final {
+    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
+      DebugTraceBudget("MSE_TRACE_FILL")--;
+      Logger::warn("D3D9RT: stub UpdateSurface called");
+    }
+    static bool w = false;
+    if (!w) { Logger::warn("D3D9: stub UpdateSurface"); w = true; }
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                            IDirect3DBaseTexture9 *pDestinationTexture) final;
   HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSurface9 *pDestSurface) final;
-  HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT, IDirect3DSurface9 *) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT, IDirect3DSurface9 *) final {
+    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
+      DebugTraceBudget("MSE_TRACE_FILL")--;
+      Logger::warn("D3D9RT: stub GetFrontBufferData called");
+    }
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
                                          IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                          D3DTEXTUREFILTERTYPE Filter) final;
-  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *, const RECT *, D3DCOLOR) final { static bool w=false; if(!w){Logger::warn("D3D9: stub ColorFill");w=true;} return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *, const RECT *, D3DCOLOR) final {
+    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
+      DebugTraceBudget("MSE_TRACE_FILL")--;
+      Logger::warn("D3D9RT: stub ColorFill called");
+    }
+    static bool w = false;
+    if (!w) { Logger::warn("D3D9: stub ColorFill"); w = true; }
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool,
                                                          IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle) final;
 
@@ -307,6 +330,9 @@ private:
   HRESULT CreateBackbuffer(UINT width, UINT height);
   obj_handle_t CreatePSO();
   void UpdateStatistics(const FrameStatisticsContainer &statistics, uint64_t frame_id);
+  void DumpBackbufferIfRequested();
+  void LogDrawDebugUp(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount,
+                      const void *vbData, UINT stride, UINT vertexCount);
 
   static uint32_t TransformIndex(D3DTRANSFORMSTATETYPE state);
 
