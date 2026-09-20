@@ -115,7 +115,16 @@ public:
     return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *) final { return S_OK; }
+  // Direct3D 9 titles commonly update a resource without a plain lock:
+  // Lock(level, &rect, D3DLOCK_NO_DIRTY_UPDATE) followed by AddDirtyRect().
+  // Ignoring the dirty rect left the GPU copy stale, and that is exactly what
+  // kept A7-3's title tiles black: the engine uploads every image through that
+  // pair, so none of its pixels ever reached Metal.
+  HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *) final {
+    for (auto &mip : mips_)
+      mip.dirty = true;
+    return S_OK;
+  }
 
   // Internal accessors
   Rc<Texture> &texture() { return texture_; }
