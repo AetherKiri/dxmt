@@ -123,7 +123,7 @@ public:
     g_frame_tex_lock++;
     if (!(Flags & D3DLOCK_NO_DIRTY_UPDATE))
       mip.dirty = true;
-    if (getenv("MSE_DEBUG_POISON"))
+    if (MSE_ENV_FLAG("MSE_DEBUG_POISON"))
       memset(mip.data, 0xCD, mip.dataSize);
     return S_OK;
   }
@@ -137,7 +137,7 @@ public:
       Logger::info(str::format("#", DebugTraceSeq(), " Unlock tex=", (void *)this, " lv=", Level,
                                " ", stats, " caller=", __builtin_return_address(0)));
     }
-    if (getenv("MSE_DEBUG_POISON")) {
+    if (MSE_ENV_FLAG("MSE_DEBUG_POISON")) {
       // The buffer was filled with 0xCD at lock time, so any deviation is a
       // write performed by the guest.  Report only uploads that carried real
       // pixels; a long run with no report means the title never decoded.
@@ -335,7 +335,7 @@ public:
         return;
       }
       std::memcpy(staging.cpu_ptr, srcData, uploadSize);
-      if (getenv("MSE_DEBUG_TEXCHECKER")) {
+      if (MSE_ENV_FLAG("MSE_DEBUG_TEXCHECKER")) {
         uint8_t *dst = (uint8_t *)staging.cpu_ptr;
         for (UINT row = 0; row < uploadHeight; row++) {
           for (UINT col = 0; col < uploadPitch / 4; col++) {

@@ -29,7 +29,7 @@ namespace dxmt {
 // entry points stay ordered relative to each other.
 #define MSE_TRACE_FILL(...)                                                     \
   do {                                                                         \
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {                              \
+    if (MSE_ENV_FLAG("MSE_TRACE_FILL") && DebugTraceBudget("MSE_TRACE_FILL") > 0) { \
       DebugTraceBudget("MSE_TRACE_FILL")--;                                    \
       Logger::info(str::format("#", DebugTraceSeq(), " FILL ", __VA_ARGS__));  \
     }                                                                          \
@@ -37,7 +37,7 @@ namespace dxmt {
 
 #define MSE_TRACE_API(...)                                                     \
   do {                                                                         \
-    if (DebugTraceBudget("MSE_TRACE_API") > 0) {                               \
+    if (MSE_ENV_FLAG("MSE_TRACE_API") && DebugTraceBudget("MSE_TRACE_API") > 0) { \
       DebugTraceBudget("MSE_TRACE_API")--;                                     \
       Logger::info(str::format("#", DebugTraceSeq(), " ", __VA_ARGS__));       \
     }                                                                          \
@@ -728,7 +728,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderState(D3DRENDERSTATETYPE State, D
 
 // Transform state
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) {
-  if (getenv("MSE_DEBUG_XFORM") && pMatrix) {
+  if (MSE_ENV_FLAG("MSE_DEBUG_XFORM") && pMatrix) {
     static int n = 0;
     if (n++ < 24) {
       char buf[400];
@@ -950,10 +950,15 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTextu
   bound_textures_[Stage] = tex;
   g_frame_state_changes++;
   if (tex) {
-    char stats[256] = "null";
-    tex->debugStats(stats, sizeof(stats));
-    MSE_TRACE_API("SetTexture stage=", Stage, " tex=", (void *)tex, " ", stats);
-    if (DebugTraceBudget("MSE_TRACE_BINDNZ") > 0) {
+    // Only summarise the texture when the trace is actually on: debugStats()
+    // walks the whole staging buffer and would otherwise be charged to the
+    // title's guest instruction budget on every bind.
+    if (MSE_ENV_FLAG("MSE_TRACE_API")) {
+      char stats[256] = "null";
+      tex->debugStats(stats, sizeof(stats));
+      MSE_TRACE_API("SetTexture stage=", Stage, " tex=", (void *)tex, " ", stats);
+    }
+    if (MSE_ENV_FLAG("MSE_TRACE_BINDNZ") && DebugTraceBudget("MSE_TRACE_BINDNZ") > 0) {
       size_t nz = tex->nonZeroBytes();
       if (nz) {
         DebugTraceBudget("MSE_TRACE_BINDNZ")--;
@@ -1711,7 +1716,7 @@ obj_handle_t D3D9Device::CreatePSO() {
     }
   }
 
-  if (getenv("MSE_DEBUG_NOFOG")) {
+  if (MSE_ENV_FLAG("MSE_DEBUG_NOFOG")) {
     alphaFunc = 0;
     psFogMode = 0;
   }
@@ -2439,9 +2444,9 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   bool depthEnabled = render_states_[D3DRS_ZENABLE] != D3DZB_FALSE && depth_stencil_;
   cap.depth_enable = depthEnabled;
   cap.depth_write = render_states_[D3DRS_ZWRITEENABLE] != FALSE;
-  if (getenv("MSE_DEBUG_NOZW"))
+  if (MSE_ENV_FLAG("MSE_DEBUG_NOZW"))
     cap.depth_write = false;
-  if (getenv("MSE_DEBUG_NOZTEST"))
+  if (MSE_ENV_FLAG("MSE_DEBUG_NOZTEST"))
     cap.depth_enable = false;
   cap.depth_func = ConvertCompareFunc(render_states_[D3DRS_ZFUNC]);
   cap.depth_tex = depth_stencil_;
@@ -2501,7 +2506,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
 #endif
   // Upload dirty texture data via staging buffer + blit command to avoid
   // replaceRegion race (CPU overwrites shared texture while GPU still reads it)
-  bool forceUpload = getenv("MSE_DEBUG_ALWAYSUPLOAD") != nullptr;
+  bool forceUpload = MSE_ENV_FLAG("MSE_DEBUG_ALWAYSUPLOAD");
   for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
     uint32_t stage = __builtin_ctz(mask);
     auto *tex = bound_textures_[stage].ptr();
@@ -2573,7 +2578,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     }
     tex_dirty_ = false;
 
-    if (getenv("MSE_DEBUG_NOTEX")) {
+    if (MSE_ENV_FLAG("MSE_DEBUG_NOTEX")) {
       // Debug: sample a known-white texture instead of the title's own data.
       for (uint8_t i = 0; i < shadow_cap_.texCaptureCount; i++) {
         auto &tc = shadow_cap_.texCaptures[i];
@@ -2777,7 +2782,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
                 " texmask=0x", (unsigned)tex_bound_mask_);
   LogDrawDebugUp(PrimitiveType, PrimitiveCount, pVertexStreamZeroData,
                  VertexStreamZeroStride, sourceVertexCount);
-  if (getenv("MSE_DEBUG_FORCEQUAD") && VertexStreamZeroStride >= 20) {
+  if (MSE_ENV_FLAG("MSE_DEBUG_FORCEQUAD") && VertexStreamZeroStride >= 20) {
     // Debug: force a visible full-screen quad by overwriting position + diffuse
     // so the fixed-function pipeline can be observed without the title's own
     // fade-in colours.
@@ -3453,7 +3458,7 @@ FFPSKey D3D9Device::BuildFFPSKey() {
   }
   key.specular_enable = render_states_[D3DRS_SPECULARENABLE] ? 1 : 0;
   key.alpha_test_enable = render_states_[D3DRS_ALPHATESTENABLE] ? 1 : 0;
-  if (getenv("MSE_DEBUG_NOALPHATEST"))
+  if (MSE_ENV_FLAG("MSE_DEBUG_NOALPHATEST"))
     key.alpha_test_enable = 0;
   key.alpha_test_func = (uint8_t)render_states_[D3DRS_ALPHAFUNC];
   key.fog_enable = render_states_[D3DRS_FOGENABLE] ? 1 : 0;
