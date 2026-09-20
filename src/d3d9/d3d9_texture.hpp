@@ -15,6 +15,8 @@
 
 namespace dxmt {
 
+extern uint64_t g_frame_tex_lock;
+
 class D3D9Device;
 class D3D9TextureSurface;
 
@@ -118,6 +120,7 @@ public:
     } else {
       pLockedRect->pBits = mip.data;
     }
+    g_frame_tex_lock++;
     if (!(Flags & D3DLOCK_NO_DIRTY_UPDATE))
       mip.dirty = true;
     if (getenv("MSE_DEBUG_POISON"))

@@ -43,6 +43,15 @@ namespace dxmt {
     }                                                                          \
   } while (0)
 
+// Frame-level counters used by MSE_TRACE_FRAME: they tell how much Direct3D
+// work the title issues per presented frame, which is what the TCTI counters
+// are spent on.
+static uint64_t g_frame_draw_up = 0;
+static uint64_t g_frame_draw = 0;
+static uint64_t g_frame_draw_indexed = 0;
+uint64_t g_frame_tex_lock = 0;
+static uint64_t g_frame_state_changes = 0;
+
 static D3DMATRIX IdentityMatrix() {
   D3DMATRIX m = {};
   m._11 = m._22 = m._33 = m._44 = 1.0f;
@@ -640,6 +649,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderState(D3DRENDERSTATETYPE State, D
 #endif
   if (State >= 256) return D3DERR_INVALIDCALL;
   if (render_states_[State] == Value) return S_OK; // no-op: skip dirty tracking
+  g_frame_state_changes++;
   render_states_[State] = Value;
 
   // Bump constant versions for render states that get packed into shader constants
@@ -938,6 +948,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTextu
   auto *tex = static_cast<D3D9Texture2D *>(pTexture);
   if (bound_textures_[Stage].ptr() == tex) return S_OK; // no-op
   bound_textures_[Stage] = tex;
+  g_frame_state_changes++;
   if (tex) {
     char stats[256] = "null";
     tex->debugStats(stats, sizeof(stats));
@@ -2744,6 +2755,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
 #endif
   if (!current_vdecl_ || !pVertexStreamZeroData)
     return D3DERR_INVALIDCALL;
+  g_frame_draw_up++;
 
   UINT vertexCount = 0;
   WMTPrimitiveType mtlPrimType;
@@ -2968,6 +2980,15 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
 #endif
 
   FlushDrawBatch();
+
+  if (getenv("MSE_TRACE_FRAME")) {
+    static uint64_t frame_no = 0;
+    Logger::info(str::format("D3D9FRAME #", (double)++frame_no, " drawUP=", (double)g_frame_draw_up,
+                             " draw=", (double)g_frame_draw, " drawIndexed=",
+                             (double)g_frame_draw_indexed, " texLock=", (double)g_frame_tex_lock,
+                             " stateChanges=", (double)g_frame_state_changes));
+    g_frame_draw_up = g_frame_draw = g_frame_draw_indexed = g_frame_tex_lock = 0;
+  }
 
   DumpBackbufferIfRequested();
 
