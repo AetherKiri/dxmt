@@ -260,6 +260,31 @@ public:
     cpu_coherent.wait(seq);
   };
 
+  void
+  WaitForIdle() {
+    auto seq = ready_for_encode.load(std::memory_order_relaxed) - 1;
+    if (seq > 0)
+      cpu_coherent.wait(seq);
+  }
+
+  struct TransientAllocation {
+    void *cpu_ptr;
+    WMT::Buffer buffer;
+    uint64_t offset;
+    uint64_t gpu_address;
+  };
+
+  TransientAllocation
+  AllocateTransientBuffer(size_t size, size_t alignment) {
+    auto [block, offset] = staging_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);
+    return {
+      static_cast<char*>(block.mapped_address) + offset,
+      block.buffer,
+      offset,
+      block.gpu_address + offset
+    };
+  }
+
   std::tuple<WMT::Buffer, uint64_t>
   AllocateStagingBuffer(size_t size, size_t alignment) {
     auto [block, offset] = staging_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);

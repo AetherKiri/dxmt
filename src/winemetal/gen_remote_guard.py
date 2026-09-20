@@ -79,7 +79,8 @@ ROUTED = {
 
 # Deliberately NOT guarded -- these belong on whichever machine runs the guest.
 #
-# airconv's DXBC->AIR compiler (thunk_SM50*): CPU-only, takes and returns plain
+# airconv's DXBC->AIR compiler (thunk_SM50*) and the DXSO/FF compiler added for
+# Direct3D 9 (thunk_DXSO*, thunk_D3D9FF*): CPU-only, takes and returns plain
 # memory, touches no Metal object. Its output reaches the host as BYTES when a
 # library is created, which is also why the shader cache stays here.
 #   KNOWN GAP: compilation is targeted at the LOCAL device's feature set. On the
@@ -104,7 +105,7 @@ ROUTED = {
 # a version that changes at random makes DXMT reconfigure presentation
 # repeatedly. Their layer dereferences are all inside `#if !TARGET_OS_IOS`, so
 # running them locally never touches a host handle.
-LOCAL_OK = re.compile(r'^(thunk_SM50|CacheReader_|CacheWriter_|DispatchData_|'
+LOCAL_OK = re.compile(r'^(thunk_SM50|thunk_DXSO|thunk_D3D9FF|CacheReader_|CacheWriter_|DispatchData_|'
                       r'NSAutoreleasePool_|SharedEventListener_|NSString_|'
                       r'WMTSetMetalShaderCachePath|WMTQueryDisplaySettingForLayer|'
                       r'MetalLayer_getEDRValue|DeveloperHUDProperties_|'
