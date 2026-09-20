@@ -132,7 +132,7 @@ Texture::createViewWithSwizzle(TextureViewDescriptor const &descriptor, WMTTextu
       continue;
     if (viewDescriptors_[i].arraySize != descriptor.arraySize)
       continue;
-    if (!swizzleEqual(viewSwizzles_[i], swizzle))
+    if (i < viewSwizzles_.size() && !swizzleEqual(viewSwizzles_[i], swizzle))
       continue;
     return i;
   }
@@ -164,6 +164,7 @@ Texture::Texture(const WMTTextureInfo &descriptor, WMT::Device device) :
       .firstArraySlice = 0,
       .arraySize = arraySize,
   });
+  viewSwizzles_.push_back(kIdentitySwizzle);
   version_ = 1;
 }
 
@@ -187,6 +188,7 @@ Texture::Texture(
       .firstArraySlice = 0,
       .arraySize = 1,
   });
+  viewSwizzles_.push_back(kIdentitySwizzle);
   version_ = 1;
 }
 

@@ -2674,8 +2674,10 @@ typedef struct opaque_HWND *HWND;
 struct macdrv_win_data {
   HWND hwnd; /* hwnd that this private data belongs to */
   macdrv_window cocoa_window;
-  macdrv_view cocoa_view;
-  macdrv_view client_cocoa_view;
+  /* Madeira's winemac.drv keeps this as the second view slot; only the
+   * client view is needed here. Keep the layout in sync with
+   * dlls/winemac.drv/macdrv.h. */
+  macdrv_view client_view;
 };
 
 struct macdrv_functions_t {
@@ -2689,6 +2691,10 @@ struct macdrv_functions_t {
   macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view v);
   void (*macdrv_view_release_metal_view)(macdrv_metal_view v);
   void (*on_main_thread)(dispatch_block_t b);
+  /* Added by Madeira: returns (creating if needed) the window's client view.
+   * Older drivers only expose the cached win_data field, which is NULL until
+   * something has presented into the window. */
+  macdrv_view (*macdrv_get_client_view)(void *hwnd);
 };
 
 static NTSTATUS
@@ -2712,6 +2718,7 @@ _CreateMetalViewFromHWND(void *obj) {
 
   struct macdrv_win_data *(*pfn_get_win_data)(HWND hwnd) = NULL;
   void (*pfn_release_win_data)(struct macdrv_win_data *data) = NULL;
+  macdrv_view (*pfn_get_client_view)(void *hwnd) = NULL;
   macdrv_metal_view (*pfn_macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d) = NULL;
   macdrv_metal_layer (*pfn_macdrv_view_get_metal_layer)(macdrv_metal_view v) = NULL;
 
@@ -2721,6 +2728,7 @@ _CreateMetalViewFromHWND(void *obj) {
     pfn_release_win_data = macdrv_functions->release_win_data;
     pfn_macdrv_view_create_metal_view = macdrv_functions->macdrv_view_create_metal_view;
     pfn_macdrv_view_get_metal_layer = macdrv_functions->macdrv_view_get_metal_layer;
+    pfn_get_client_view = macdrv_functions->macdrv_get_client_view;
   } else {
     pfn_get_win_data = dlsym(RTLD_DEFAULT, "get_win_data");
     pfn_release_win_data = dlsym(RTLD_DEFAULT, "release_win_data");
@@ -2731,8 +2739,11 @@ _CreateMetalViewFromHWND(void *obj) {
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
+    macdrv_view client_view = NULL;
+    if (pfn_get_client_view) client_view = pfn_get_client_view((void *)params->hwnd);
+    if (!client_view && win_data) client_view = win_data->client_view;
     macdrv_metal_view view =
-        pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
+        pfn_macdrv_view_create_metal_view(client_view, (macdrv_metal_device)params->device);
     params->ret_view = (obj_handle_t)view;
     if (view) {
       params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
