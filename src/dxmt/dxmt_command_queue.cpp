@@ -25,6 +25,10 @@ CommandQueue::CommandQueue(WMT::Device device) :
         device, WMTResourceOptionCPUCacheModeWriteCombined | WMTResourceHazardTrackingModeUntracked |
                     WMTResourceStorageModeManaged, false
     }),
+    transient_allocator({
+        device, WMTResourceOptionCPUCacheModeWriteCombined | WMTResourceHazardTrackingModeUntracked |
+                    WMTResourceStorageModeShared
+    }),
     copy_temp_allocator({device, WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate}),
     argbuf_allocator({
         device,
@@ -195,6 +199,7 @@ CommandQueue::WaitForFinishThread() {
     chunk_ongoing.notify_one();
 
     staging_allocator.free_blocks(internal_seq);
+    transient_allocator.free_blocks(internal_seq);
     copy_temp_allocator.free_blocks(internal_seq);
     argbuf_allocator.free_blocks(internal_seq);
 

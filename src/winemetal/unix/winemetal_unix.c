@@ -3023,7 +3023,10 @@ thunk_D3D9FFCompilePS(void *args) {
 
 static inline void *
 UInt32ToPtr(uint32_t v) {
-  return (void *)(uint64_t)v;
+  /* Madeira-SE keeps the PE32 address space biased in the host process, so
+   * nested pointers carried inside a Unix-call parameter block have to be
+   * translated the same way the outer block was. */
+  return WMT_GUEST_RAW_PTR(v);
 }
 
 #ifndef DXMT_NATIVE
@@ -3267,6 +3270,7 @@ thunk32_SM50GetCompiledBitcode(void *args) {
   struct sm50_get_compiled_bitcode_params32 *params = args;
 
   SM50GetCompiledBitcode(params->bitcode, UInt32ToPtr(params->data_out));
+
 
   return STATUS_SUCCESS;
 }

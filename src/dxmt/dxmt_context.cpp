@@ -804,8 +804,14 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       auto gpu_buffer_ = data->allocated_argbuf;
       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
       encoder.setVertexBuffer(gpu_buffer_, 0, 16);
+      /* Direct3D 9 keeps its VS constants at vertex buffer index 17 and its PS
+       * constants at fragment buffer index 18.  Metal asserts when an offset
+       * is set for an index that has no buffer, which aborts the whole
+       * encoder, so both have to be bound alongside index 16. */
+      encoder.setVertexBuffer(gpu_buffer_, 0, 17);
       encoder.setVertexBuffer(gpu_buffer_, 0, 29);
       encoder.setVertexBuffer(gpu_buffer_, 0, 30);
+      encoder.setFragmentBuffer(gpu_buffer_, 0, 18);
       encoder.setFragmentBuffer(gpu_buffer_, 0, 29);
       encoder.setFragmentBuffer(gpu_buffer_, 0, 30);
       /* ml754: SKIP MESH BINDINGS WHEN THE DEVICE HAS NO MESH TRANSPORT.

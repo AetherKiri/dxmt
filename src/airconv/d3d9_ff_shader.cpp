@@ -822,8 +822,11 @@ static void compileFFPixelShader(
       .arg_name = "tex" + std::to_string(stage),
       .raster_order_group = {},
     });
+    // Metal only exposes 16 sampler slots, so the sampler table index has to
+    // be the D3D9 stage itself.  (Textures keep a wider spread because their
+    // table is much larger and the two tables are independent.)
     uint32_t sampIdx = func_sig.DefineInput(ArgumentBindingSampler{
-      .location_index = 20 + stage * 2,
+      .location_index = stage,
       .array_size = 1,
       .arg_name = "samp" + std::to_string(stage),
     });

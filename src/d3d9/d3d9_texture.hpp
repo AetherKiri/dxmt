@@ -3,6 +3,7 @@
 #include "com/com_object.hpp"
 #include "dxmt_texture.hpp"
 #include "d3d9_format.hpp"
+#include "log/log.hpp"
 #include <d3d9.h>
 #include <cstdlib>
 #include <cstring>
@@ -212,6 +213,10 @@ public:
 
       size_t uploadSize = (size_t)uploadPitch * uploadHeight;
       auto staging = queue.AllocateTransientBuffer(uploadSize, 16);
+      if (!staging.cpu_ptr) {
+        WARN("D3D9: transient upload allocation failed for level ", i);
+        return;
+      }
       std::memcpy(staging.cpu_ptr, srcData, uploadSize);
 
       auto chunk = queue.CurrentChunk();
@@ -319,7 +324,11 @@ public:
     return parent_->UnlockRect(level_);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final {
+    static bool warned = false;
+    if (!warned) { warned = true; Logger::warn("D3D9: texture surface GetDC is not implemented"); }
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D3DERR_INVALIDCALL; }
 
   // Internal accessors for render target usage

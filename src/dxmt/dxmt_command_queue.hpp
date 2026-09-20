@@ -167,6 +167,10 @@ private:
   }
 
   RingBumpState<StagingBufferBlockAllocator> staging_allocator;
+  // d3d9 transient uploads (DrawPrimitiveUP, dynamic texture uploads) need a
+  // CPU writable pointer into the buffer storage, so this ring uses placed
+  // (host backed) shared buffers instead of the unplaced staging ring above.
+  RingBumpState<StagingBufferBlockAllocator> transient_allocator;
   RingBumpState<GpuPrivateBufferBlockAllocator> copy_temp_allocator;
   RingBumpState<StagingBufferBlockAllocator, kCommandChunkGPUHeapSize> argbuf_allocator;
   RingBumpState<HostBufferBlockAllocator, kCommandChunkCPUHeapSize, dxmt::null_mutex> cpu_command_allocator;
@@ -276,7 +280,7 @@ public:
 
   TransientAllocation
   AllocateTransientBuffer(size_t size, size_t alignment) {
-    auto [block, offset] = staging_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);
+    auto [block, offset] = transient_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);
     return {
       static_cast<char*>(block.mapped_address) + offset,
       block.buffer,

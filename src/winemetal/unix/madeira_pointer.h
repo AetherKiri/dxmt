@@ -56,10 +56,20 @@ static inline madeira_host_pointer_fn madeira_host_pointer_resolver(void)
 static inline void *madeira_guest_to_host_pointer(const void *value)
 {
     madeira_guest_pointer_fn function;
+    uint64_t raw = (uint64_t)(uintptr_t)value;
 
-    if (!value) return NULL;
+    if (!raw) return NULL;
+    /*
+     * A PE32 guest can only name addresses below 4 GiB, so anything above the
+     * 32-bit boundary is already a host pointer (an AIR metallib buffer handed
+     * back through SM50_COMPILED_BITCODE for example, or a Wine heap
+     * allocation).  Applying the arena bias to those would send the native
+     * side to an unmapped address.
+     */
+    if (raw >= UINT64_C(0x100000000))
+        return (void *)(uintptr_t)raw;
     function = madeira_guest_pointer_resolver();
-    return function ? function((uint64_t)(uintptr_t)value) : (void *)value;
+    return function ? function(raw) : (void *)(uintptr_t)raw;
 }
 
 static inline uint64_t madeira_host_to_guest_pointer(const void *value)

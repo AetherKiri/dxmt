@@ -1026,8 +1026,10 @@ static void compilePixelShader(
       .arg_name = "tex" + std::to_string(sdcl.reg),
       .raster_order_group = {},
     });
+    // Metal only exposes 16 sampler slots, so the sampler table index must be
+    // the D3D9 sampler register (0-15).
     uint32_t sampIdx = func_sig.DefineInput(ArgumentBindingSampler{
-      .location_index = 20 + sdcl.reg * 2,
+      .location_index = sdcl.reg,
       .array_size = 1,
       .arg_name = "samp" + std::to_string(sdcl.reg),
     });

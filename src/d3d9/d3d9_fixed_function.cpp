@@ -93,7 +93,9 @@ WMT::Reference<WMT::Function> GenerateFFVertexShader(
   // Store in cache
   {
     auto writer = cache.getWriter();
-    if (writer) writer->set(cacheKey, lib_data);
+    if (writer) {
+      writer->set(cacheKey, lib_data);
+    }
   }
   ShaderCache::recordShader(start_ns);
 

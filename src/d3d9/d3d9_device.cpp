@@ -246,6 +246,15 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
     defaultSampInfo.s_address_mode = WMTSamplerAddressModeClampToEdge;
     defaultSampInfo.t_address_mode = WMTSamplerAddressModeClampToEdge;
     defaultSampInfo.r_address_mode = WMTSamplerAddressModeClampToEdge;
+    // Metal rejects maxAnisotropy = 0 outright, and D3D9 always samples with
+    // normalised coordinates, so an all-zero descriptor would silently produce
+    // an unusable sampler for every stage that never set sampler state.
+    defaultSampInfo.border_color = WMTSamplerBorderColorTransparentBlack;
+    defaultSampInfo.compare_function = WMTCompareFunctionNever;
+    defaultSampInfo.lod_min_clamp = 0.0f;
+    defaultSampInfo.lod_max_clamp = 1000.0f;
+    defaultSampInfo.max_anisotroy = 1;
+    defaultSampInfo.normalized_coords = true;
     default_sampler_ = MTLDevice_newSamplerState(dxmt_device_->device().handle, &defaultSampInfo);
   }
 
@@ -2049,7 +2058,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
       auto &setsamp = ctx.encodeRenderCommand<wmtcmd_render_setsamplerstate>();
       setsamp.type = WMTRenderCommandSetFragmentSamplerState;
       setsamp.sampler_state = cap.samplerHandles[tc.stage];
-      setsamp.index = 20 + tc.stage * 2;
+      setsamp.index = tc.stage;
     }
     ctx.makeResident<PipelineStage::Pixel, PipelineKind::Ordinary>(tc.texture, tc.viewKey);
   }
@@ -2201,6 +2210,8 @@ static CommandQueue::TransientAllocation GenerateFanIndices(CommandQueue &queue,
   UINT indexCount = primCount * 3;
   UINT size = indexCount * sizeof(uint16_t);
   auto alloc = queue.AllocateTransientBuffer(size, 2);
+  if (!alloc.cpu_ptr)
+    return alloc;
   auto *indices = static_cast<uint16_t*>(alloc.cpu_ptr);
   for (UINT i = 0; i < primCount; i++) {
     indices[i * 3 + 0] = (uint16_t)(startVertex + 0);
@@ -2513,6 +2524,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
   if (PrimitiveType == D3DPT_TRIANGLEFAN) {
     auto &queue = dxmt_device_->queue();
     auto fanIB = GenerateFanIndices(queue, PrimitiveCount, StartVertex);
+    if (!fanIB.cpu_ptr)
+      return D3DERR_INVALIDCALL;
     UINT indexCount = PrimitiveCount * 3;
     auto cap = BuildDrawCapture(mtlPrimType);
     if (!cap.pso) return D3DERR_INVALIDCALL;
@@ -2584,6 +2597,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     auto &queue = dxmt_device_->queue();
     UINT ibSize = indexCount * sizeof(uint16_t);
     auto fanIB = queue.AllocateTransientBuffer(ibSize, 2);
+    if (!fanIB.cpu_ptr)
+      return D3DERR_INVALIDCALL;
     memcpy(fanIB.cpu_ptr, expandedIndices.data(), ibSize);
 
     auto cap = BuildDrawCapture(mtlPrimType);
@@ -2650,6 +2665,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
     ? PrimitiveCount + 2 : vertexCount;
   UINT dataSize = sourceVertexCount * VertexStreamZeroStride;
   auto transientVB = queue.AllocateTransientBuffer(dataSize, 16);
+  if (!transientVB.cpu_ptr)
+    return D3DERR_INVALIDCALL;
   memcpy(transientVB.cpu_ptr, pVertexStreamZeroData, dataSize);
 
   // Save and set stream source
@@ -2679,6 +2696,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
 
   if (PrimitiveType == D3DPT_TRIANGLEFAN) {
     auto fanIB = GenerateFanIndices(queue, PrimitiveCount, 0);
+    if (!fanIB.cpu_ptr)
+      return D3DERR_INVALIDCALL;
     UINT fanIndexCount = PrimitiveCount * 3;
     BatchedDraw bd;
     bd.cap = std::move(cap);
@@ -2729,6 +2748,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
   // Create transient vertex buffer from ring
   UINT vbDataSize = (MinVertexIndex + NumVertices) * VertexStreamZeroStride;
   auto transientVB = queue.AllocateTransientBuffer(vbDataSize, 16);
+  if (!transientVB.cpu_ptr)
+    return D3DERR_INVALIDCALL;
   memcpy(transientVB.cpu_ptr, pVertexStreamZeroData, vbDataSize);
 
   // Create transient index buffer — expand fan if needed
@@ -2740,6 +2761,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
     const uint8_t *srcData = (const uint8_t *)pIndexData;
     UINT ibSize = indexCount * sizeof(uint16_t);
     transientIB = queue.AllocateTransientBuffer(ibSize, 2);
+    if (!transientIB.cpu_ptr)
+      return D3DERR_INVALIDCALL;
     auto *expandedIndices = static_cast<uint16_t*>(transientIB.cpu_ptr);
     for (UINT i = 0; i < PrimitiveCount; i++) {
       uint32_t i0, i1, i2;
@@ -2760,6 +2783,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
   } else {
     UINT ibDataSize = indexCount * indexStride;
     transientIB = queue.AllocateTransientBuffer(ibDataSize, indexStride);
+    if (!transientIB.cpu_ptr)
+      return D3DERR_INVALIDCALL;
     memcpy(transientIB.cpu_ptr, pIndexData, ibDataSize);
   }
 
@@ -2851,6 +2876,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
 
   return S_OK;
 }
+
 
 void D3D9Device::UpdateStatistics(const FrameStatisticsContainer &statistics, uint64_t frame_id) {
 #ifdef DXMT_PERF
@@ -3014,6 +3040,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderTargetData(
 // Fixed-function pipeline helpers
 
 FFVSKey D3D9Device::BuildFFVSKey() {
+  Logger::info("D3D9FF: BuildFFVSKey enter");
   FFVSKey key = {};
   if (!current_vdecl_) return key;
 
@@ -3085,6 +3112,7 @@ FFVSKey D3D9Device::BuildFFVSKey() {
 }
 
 FFPSKey D3D9Device::BuildFFPSKey() {
+  Logger::info("D3D9FF: BuildFFPSKey enter");
   FFPSKey key = {};
   for (uint32_t i = 0; i < 8; i++) {
     auto &stage = key.stages[i];
@@ -3107,6 +3135,7 @@ FFPSKey D3D9Device::BuildFFPSKey() {
 
 WMT::Reference<WMT::Function> D3D9Device::GetOrCreateFFVS(
     const FFVSKey &key, D3D9VertexDeclaration *vdecl) {
+  Logger::info("D3D9FF: GetOrCreateFFVS enter");
   auto it = ff_vs_cache_.find(key);
   if (it != ff_vs_cache_.end())
     return it->second;
@@ -3124,6 +3153,7 @@ WMT::Reference<WMT::Function> D3D9Device::GetOrCreateFFVS(
 }
 
 WMT::Reference<WMT::Function> D3D9Device::GetOrCreateFFPS(const FFPSKey &key) {
+  Logger::info("D3D9FF: GetOrCreateFFPS enter");
   auto it = ff_ps_cache_.find(key);
   if (it != ff_ps_cache_.end())
     return it->second;

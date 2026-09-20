@@ -261,7 +261,8 @@ int
 _CacheReader_getPreloaded(void *obj) {
   struct unixcall_cache_get_preloaded *params = obj;
   CacheReader *reader = (CacheReader *)params->cache;
-  NSData *key = [[NSData alloc] initWithBytesNoCopy:(void *)params->key.ptr length:params->key_length freeWhenDone:false];
+  NSData *key =
+      [[NSData alloc] initWithBytesNoCopy:WMT_GUEST_PTR(params->key) length:params->key_length freeWhenDone:false];
   params->ret_library = (obj_handle_t)[reader getPreloaded:key];
   [key release];
   return 0;

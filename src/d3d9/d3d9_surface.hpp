@@ -5,6 +5,7 @@
 #include <d3d9.h>
 #include <cstdlib>
 #include <cstring>
+#include "log/log.hpp"
 
 namespace dxmt {
 
@@ -38,7 +39,11 @@ public:
   HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) final;
   HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final;
   HRESULT STDMETHODCALLTYPE UnlockRect() final;
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final {
+    static bool warned = false;
+    if (!warned) { warned = true; Logger::warn("D3D9: surface GetDC is not implemented"); }
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D3DERR_INVALIDCALL; }
 
   Rc<Texture> &texture() { return texture_; }
