@@ -152,6 +152,15 @@ add_project_arguments('-DDXMT_NATIVE=1', language: 'cpp')
 add_project_arguments('-DDXMT_NATIVE=1', language: 'c')
 endif
 
+# Madeira-SE ships the Unix bridge inside a macOS application.  Private Metal
+# entry points are weak-linked on some SDKs and may resolve to NULL at runtime;
+# keep the App Store/runtime build on the public Metal surface unless a native
+# DXMT build explicitly opts into those APIs.
+if build_machine.system() == 'darwin' and not dxmt_native
+add_project_arguments('-DDXMT_NO_PRIVATE_API=1', language: 'cpp')
+add_project_arguments('-DDXMT_NO_PRIVATE_API=1', language: 'c')
+endif
+
 add_project_arguments('-DDXMT_PAGE_SIZE=4096', language: 'cpp')
 
 # On iOS all Metal storage modes that are Managed on macOS must become
@@ -214,7 +223,9 @@ if not dxmt_native
     error('invalid cpu family')
   endif
 
-  unix_install_dir = 'x86_64-unix'
+  # The Unix bridge is a build-machine library.  Madeira-SE builds the guest
+  # PE DLLs for x86 while the native Wine host remains Apple Silicon.
+  unix_install_dir = build_machine.cpu_family() + '-unix'
 else
   wine_builtin_dll = false
   windows_native_install_dir = ''
@@ -226,11 +237,8 @@ add_project_arguments(cc.get_supported_arguments(compiler_args), language: 'c')
 add_project_arguments(clang.get_supported_arguments(native_compiler_args), language: 'c', native: true)
 add_project_link_arguments(cpp.get_supported_link_arguments(link_args), language: 'cpp')
 add_project_link_arguments(cc.get_supported_link_arguments(link_args), language: 'c')
-if not dxmt_native
-  add_project_arguments(['-arch', 'x86_64'], language: 'c',  native: true)
-  add_project_arguments(['-arch', 'x86_64'], language: 'cpp',  native: true)
-  add_project_link_arguments(['-arch', 'x86_64'], language: 'cpp',  native: true)
-endif
+# Do not force the native helper to Intel.  The cross build's PE side follows
+# target_machine, while native:true targets must follow the ARM64 Wine host.
 
 subdir('libs')
 subdir('src')

@@ -50,13 +50,15 @@ winemetal_dep = declare_dependency(
   include_directories : [ include_directories('.') ],
 )
 
-custom_target('postprocess_lib',
-  input : winemetal_dll,
-  output: 'winemetal.dll.postproc',
-  command : [ winebuild, '--builtin', '@INPUT@' ],
-  depends : winemetal_dll,
-  build_by_default : true
-)
+if wine_builtin_dll
+  custom_target('postprocess_lib',
+    input : winemetal_dll,
+    output: 'winemetal.dll.postproc',
+    command : [ winebuild, '--builtin', '@INPUT@' ],
+    depends : winemetal_dll,
+    build_by_default : true
+  )
+endif
 
 if cpu_family == 'x86_64'
   subdir('unix')

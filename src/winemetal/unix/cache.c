@@ -1,7 +1,9 @@
 #import <Foundation/Foundation.h>
 #include "sqlite3.h"
+#include <dlfcn.h>
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
+#include "madeira_pointer.h"
 
 @interface CacheReader : NSObject
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version;
@@ -184,7 +186,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 int
 _CacheReader_alloc_init(void *obj) {
   struct unixcall_cache_alloc_init *params = obj;
-  NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
+  NSString *path = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->path) encoding:NSUTF8StringEncoding];
   params->ret_cache = (obj_handle_t)[[CacheReader alloc] initWithPath:path version:params->version];
   [path release];
   return 0;
@@ -194,7 +196,7 @@ int
 _CacheReader_get(void *obj) {
   struct unixcall_cache_get *params = obj;
   NSData *key =
-      [[NSData alloc] initWithBytesNoCopy:(void *)params->key.ptr length:params->key_length freeWhenDone:false];
+      [[NSData alloc] initWithBytesNoCopy:WMT_GUEST_PTR(params->key) length:params->key_length freeWhenDone:false];
   CacheReader *reader = (CacheReader *)params->cache;
   params->ret_data = (obj_handle_t)[reader get:key];
   [key release];
@@ -204,7 +206,7 @@ _CacheReader_get(void *obj) {
 int
 _CacheWriter_alloc_init(void *obj) {
   struct unixcall_cache_alloc_init *params = obj;
-  NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
+  NSString *path = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->path) encoding:NSUTF8StringEncoding];
   params->ret_cache = (obj_handle_t)[[CacheWriter alloc] initWithPath:path version:params->version];
   [path release];
   return 0;
@@ -214,7 +216,7 @@ int
 _CacheWriter_set(void *obj) {
   struct unixcall_cache_set *params = obj;
   NSData *key =
-      [[NSData alloc] initWithBytesNoCopy:(void *)params->key.ptr length:params->key_length freeWhenDone:false];
+      [[NSData alloc] initWithBytesNoCopy:WMT_GUEST_PTR(params->key) length:params->key_length freeWhenDone:false];
   CacheWriter *writer = (CacheWriter *)params->cache;
   [writer set:key value:(dispatch_data_t)params->value_data];
   [key release];
@@ -229,10 +231,28 @@ extern NSString* MTLGetShaderCachePath();
 int
 _WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
-  NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
+  NSString *path = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->path) encoding:NSUTF8StringEncoding];
   NSString *resolved_path = resolve_cache_dir(path, false);
-  MTLSetShaderCachePath(resolved_path);
-  params->ret_success = [MTLGetShaderCachePath() isEqualToString:resolved_path];
+  /* These are private Metal entry points and are weak-linked by design.
+   * Recent macOS releases may omit them; calling an unavailable weak symbol
+   * would branch through NULL during DXGI.DLL process attach and take down
+   * the whole guest before it reaches D3D11CreateDevice.  Shader caching is
+   * optional, so leave it disabled when the symbols are absent. */
+  /* Use dlsym instead of testing the function identifiers directly.  Clang
+   * treats a weak function reference as always non-null when it is written
+   * as a call expression, even though dyld leaves the slot zero on systems
+   * that do not export the private entry point. */
+  void (*set_shader_cache_path)(NSString *) =
+      (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MTLSetShaderCachePath");
+  NSString *(*get_shader_cache_path)(void) =
+      (NSString *(*)(void))dlsym(RTLD_DEFAULT, "MTLGetShaderCachePath");
+  if (!set_shader_cache_path || !get_shader_cache_path) {
+    params->ret_success = false;
+    [path release];
+    return 0;
+  }
+  set_shader_cache_path(resolved_path);
+  params->ret_success = [get_shader_cache_path() isEqualToString:resolved_path];
   [path release];
   return 0;
 };
@@ -240,7 +260,7 @@ _WMTSetMetalShaderCachePath(void *obj) {
 #else
 
 int
-WMTSetMetalShaderCachePath(void *obj) {
+_WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
   params->ret_success = 0;
   return 0;

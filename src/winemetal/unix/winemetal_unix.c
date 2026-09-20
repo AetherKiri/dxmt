@@ -4,10 +4,12 @@
 #include <TargetConditionals.h>
 #if TARGET_OS_IOS
 #import <UIKit/UIKit.h>
+#if !TARGET_OS_MACCATALYST
 /* iOS lacks CGDirectDisplay: provide minimal stubs for single-display use. */
 typedef uint32_t CGDirectDisplayID;
 #define kCGNullDirectDisplay ((CGDirectDisplayID)0)
 static inline CGDirectDisplayID CGMainDisplayID(void) { return 1; }
+#endif
 #else
 #import <Cocoa/Cocoa.h>
 #endif
@@ -35,6 +37,7 @@ extern kern_return_t bootstrap_look_up(mach_port_t bp, const char *service_name,
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
 #include "../airconv_thunks.h"
+#include "madeira_pointer.h"
 
 /* iOS-Madeira 2026-05-22 draw-call telemetry. Defined further down with
  * the present counter; forward-declared here so the draw command cases
@@ -174,7 +177,7 @@ _MTLDevice_name(void *obj) {
 static NTSTATUS
 _NSString_getCString(void *obj) {
   struct unixcall_nsstring_getcstring *params = obj;
-  params->ret = (uint32_t)[(NSString *)params->str getCString:(char *)params->buffer_ptr
+  params->ret = (uint32_t)[(NSString *)params->str getCString:(char *)WMT_GUEST_RAW_PTR(params->buffer_ptr)
                                                     maxLength:params->max_length
                                                      encoding:params->encoding];
   return STATUS_SUCCESS;
@@ -296,7 +299,7 @@ static NTSTATUS
 _MTLDevice_newBuffer(void *obj) {
   struct unixcall_mtldevice_newbuffer *params = obj;
   if (wmtr_enabled()) {
-    struct WMTBufferInfo *bi = params->info.ptr;
+    struct WMTBufferInfo *bi = WMT_GUEST_PTR(params->info);
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTBufferInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof *bi; w->extra_count = 0;
@@ -316,7 +319,7 @@ _MTLDevice_newBuffer(void *obj) {
        * allocation here meant the app wrote one block while the flush uploaded
        * another, so the shaders read zeros -- draws executed and produced
        * nothing, which is exactly the flat clear with no geometry. */
-      void *shadow = bi->memory.ptr;
+      void *shadow = WMT_GUEST_PTR(bi->memory);
       int owned = 0;
       if (cpu && !shadow) {
         shadow = calloc(1, bi->length ? bi->length : 1);
@@ -324,27 +327,29 @@ _MTLDevice_newBuffer(void *obj) {
         if (!shadow)
           fprintf(stderr, "[wmt-remote] no shadow for a %llu byte buffer -- its writes "
                           "will NOT reach the host\n", (unsigned long long)bi->length);
-        bi->memory.ptr = shadow;   /* only when the caller supplied none */
+        WMT_SET_GUEST_PTR(bi->memory, shadow);   /* only when the caller supplied none */
       }
       wmtr_buf_add(r.handle, shadow, bi->length, bi->options,
                    cpu && shadow != NULL, owned);
     } else {
-      bi->memory.ptr = NULL;
+      WMT_SET_GUEST_PTR(bi->memory, NULL);
       bi->gpu_address = 0;
     }
     return STATUS_SUCCESS;
   }
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  struct WMTBufferInfo *info = params->info.ptr;
+  struct WMTBufferInfo *info = WMT_GUEST_PTR(params->info);
   id<MTLBuffer> buffer;
-  if (info->memory.ptr) {
-    buffer = [device newBufferWithBytesNoCopy:info->memory.ptr
+  void *memory = WMT_GUEST_PTR(info->memory);
+  if (memory) {
+    buffer = [device newBufferWithBytesNoCopy:memory
                                        length:info->length
                                       options:(enum MTLResourceOptions)info->options
                                   deallocator:NULL];
   } else {
     buffer = [device newBufferWithLength:info->length options:(enum MTLResourceOptions)info->options];
-    info->memory.ptr = [buffer storageMode] == MTLStorageModePrivate ? NULL : [buffer contents];
+    WMT_SET_GUEST_PTR(info->memory,
+                      [buffer storageMode] == MTLStorageModePrivate ? NULL : [buffer contents]);
   }
   params->ret = (obj_handle_t)buffer;
   info->gpu_address = [buffer gpuAddress];
@@ -358,18 +363,18 @@ _MTLDevice_newSamplerState(void *obj) {
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTSamplerInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof(struct WMTSamplerInfo); w->extra_count = 0;
-    memcpy(buf + sizeof *w, params->info.ptr, sizeof(struct WMTSamplerInfo));
+    memcpy(buf + sizeof *w, WMT_GUEST_PTR(params->info), sizeof(struct WMTSamplerInfo));
     struct rm_ret_handle_u64 r;
     if (wmtr_call(RM_OP_NEW_SAMPLER_INFO, buf, sizeof buf, &r, sizeof r, 0) == RM_OK) {
       params->ret = r.handle;
-      ((struct WMTSamplerInfo *)params->info.ptr)->gpu_resource_id = r.value;
+      ((struct WMTSamplerInfo *)WMT_GUEST_PTR(params->info))->gpu_resource_id = r.value;
     } else {
       params->ret = 0;
     }
     return STATUS_SUCCESS;
   }
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  struct WMTSamplerInfo *info = params->info.ptr;
+  struct WMTSamplerInfo *info = WMT_GUEST_PTR(params->info);
 
   MTLSamplerDescriptor *sampler_desc = [[MTLSamplerDescriptor alloc] init];
   sampler_desc.borderColor = (MTLSamplerBorderColor)info->border_color;
@@ -401,13 +406,13 @@ _MTLDevice_newDepthStencilState(void *obj) {
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTDepthStencilInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof(struct WMTDepthStencilInfo); w->extra_count = 0;
-    memcpy(buf + sizeof *w, params->info.ptr, sizeof(struct WMTDepthStencilInfo));
+    memcpy(buf + sizeof *w, WMT_GUEST_PTR(params->info), sizeof(struct WMTDepthStencilInfo));
     struct rm_ret_handle r;
     params->ret = (wmtr_call(RM_OP_NEW_DSS_INFO, buf, sizeof buf, &r, sizeof r, 0) == RM_OK) ? r.handle : 0;
     return STATUS_SUCCESS;
   }
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  const struct WMTDepthStencilInfo *info = params->info.ptr;
+  const struct WMTDepthStencilInfo *info = WMT_GUEST_PTR(params->info);
 
   MTLDepthStencilDescriptor *desc = [[MTLDepthStencilDescriptor alloc] init];
   desc.depthCompareFunction = (MTLCompareFunction)info->depth_compare_function;
@@ -646,7 +651,7 @@ static NTSTATUS
 _MTLDevice_newTexture(void *obj) {
   struct unixcall_mtldevice_newtexture *params = obj;
   if (wmtr_enabled()) {
-    struct WMTTextureInfo *ti = params->info.ptr;
+    struct WMTTextureInfo *ti = WMT_GUEST_PTR(params->info);
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTTextureInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof *ti; w->extra_count = 0;
@@ -665,7 +670,7 @@ _MTLDevice_newTexture(void *obj) {
     return STATUS_SUCCESS;
   }
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  struct WMTTextureInfo *info = params->info.ptr;
+  struct WMTTextureInfo *info = WMT_GUEST_PTR(params->info);
   MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
   fill_texture_descriptor(desc, info);
 
@@ -682,7 +687,7 @@ static NTSTATUS
 _MTLBuffer_newTexture(void *obj) {
   struct unixcall_mtlbuffer_newtexture *params = obj;
   id<MTLBuffer> buffer = (id<MTLBuffer>)params->buffer;
-  struct WMTTextureInfo *info = params->info.ptr;
+  struct WMTTextureInfo *info = WMT_GUEST_PTR(params->info);
   if (wmtr_enabled()) {
     uint8_t buf[sizeof(struct rm_buf_texture) + sizeof(struct WMTTextureInfo)];
     struct rm_buf_texture *a = (void *)buf;
@@ -829,7 +834,7 @@ _MTLLibrary_newFunction(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
   if (wmtr_enabled()) {
     /* arg is a guest pointer to a C string; the NAME crosses, never the pointer. */
-    const char *nm = (const char *)params->arg;
+    const char *nm = (const char *)WMT_GUEST_RAW_PTR(params->arg);
     size_t nlen = nm ? strlen(nm) : 0;
     params->ret = 0;
     if (nlen && nlen < 1024) {
@@ -846,7 +851,8 @@ _MTLLibrary_newFunction(void *obj) {
     return STATUS_SUCCESS;
   }
   id<MTLLibrary> library = (id<MTLLibrary>)params->handle;
-  NSString *name = [[NSString alloc] initWithCString:(char *)params->arg encoding:NSUTF8StringEncoding];
+  NSString *name = [[NSString alloc] initWithCString:(char *)WMT_GUEST_RAW_PTR(params->arg)
+                                             encoding:NSUTF8StringEncoding];
   params->ret = (obj_handle_t)[library newFunctionWithName:name];
   [name release];
   return STATUS_SUCCESS;
@@ -873,14 +879,14 @@ _MTLDevice_newComputePipelineState(void *obj) {
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTComputePipelineInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof(struct WMTComputePipelineInfo); w->extra_count = 0;
-    memcpy(buf + sizeof *w, params->info.ptr, sizeof(struct WMTComputePipelineInfo));
+    memcpy(buf + sizeof *w, WMT_GUEST_PTR(params->info), sizeof(struct WMTComputePipelineInfo));
     struct rm_ret_handle r;
     params->ret_error = 0;
     params->ret_pso = (wmtr_call(RM_OP_NEW_COMPUTE_PSO_INFO, buf, sizeof buf, &r, sizeof r, 0) == RM_OK) ? r.handle : 0;
     return STATUS_SUCCESS;
   }
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  const struct WMTComputePipelineInfo *info = params->info.ptr;
+  const struct WMTComputePipelineInfo *info = WMT_GUEST_PTR(params->info);
   MTLComputePipelineDescriptor *descriptor = [[MTLComputePipelineDescriptor alloc] init];
   NSError *err = NULL;
   descriptor.computeFunction = (id<MTLFunction>)info->compute_function;
@@ -889,8 +895,8 @@ _MTLDevice_newComputePipelineState(void *obj) {
     if (info->immutable_buffers & (1 << i))
       descriptor.buffers[i].mutability = MTLMutabilityImmutable;
   }
-  if (info->num_binary_archives_for_lookup && info->binary_archives_for_lookup.ptr)
-    descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)info->binary_archives_for_lookup.ptr
+    if (info->num_binary_archives_for_lookup && WMT_GUEST_PTR(info->binary_archives_for_lookup))
+    descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)WMT_GUEST_PTR(info->binary_archives_for_lookup)
                                                     count:info->num_binary_archives_for_lookup];
   MTLPipelineOption options =
       info->fail_on_binary_archive_miss ? MTLPipelineOptionFailOnBinaryArchiveMiss : MTLPipelineOptionNone;
@@ -929,7 +935,7 @@ _MTLCommandBuffer_computeCommandEncoder(void *obj) {
 static NTSTATUS
 _MTLCommandBuffer_renderCommandEncoder(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
-  struct WMTRenderPassInfo *info = (struct WMTRenderPassInfo *)params->arg;
+  struct WMTRenderPassInfo *info = WMT_GUEST_RAW_PTR(params->arg);
   if (wmtr_enabled()) {
     /* The full pass: eight colour attachments with their own load/store
      * actions, levels, slices and resolve targets, plus depth and stencil.
@@ -1054,13 +1060,13 @@ _MTLDevice_newRenderPipelineState(void *obj) {
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTRenderPipelineInfo)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->device; w->info_len = sizeof(struct WMTRenderPipelineInfo); w->extra_count = 0;
-    memcpy(buf + sizeof *w, params->info.ptr, sizeof(struct WMTRenderPipelineInfo));
+    memcpy(buf + sizeof *w, WMT_GUEST_PTR(params->info), sizeof(struct WMTRenderPipelineInfo));
     struct rm_ret_handle r;
     params->ret_error = 0;
     params->ret_pso = (wmtr_call(RM_OP_NEW_RENDER_PSO_INFO, buf, sizeof buf, &r, sizeof r, 0) == RM_OK) ? r.handle : 0;
     return STATUS_SUCCESS;
   }
-  const struct WMTRenderPipelineInfo *info = params->info.ptr;
+  const struct WMTRenderPipelineInfo *info = WMT_GUEST_PTR(params->info);
   MTLRenderPipelineDescriptor *descriptor = [[MTLRenderPipelineDescriptor alloc] init];
 
   for (unsigned i = 0; i < 8; i++) {
@@ -1102,8 +1108,8 @@ _MTLDevice_newRenderPipelineState(void *obj) {
   descriptor.vertexFunction = (id<MTLFunction>)info->vertex_function;
   descriptor.fragmentFunction = (id<MTLFunction>)info->fragment_function;
 
-  if (info->num_binary_archives_for_lookup && info->binary_archives_for_lookup.ptr)
-    descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)info->binary_archives_for_lookup.ptr
+    if (info->num_binary_archives_for_lookup && WMT_GUEST_PTR(info->binary_archives_for_lookup))
+    descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)WMT_GUEST_PTR(info->binary_archives_for_lookup)
                                                     count:info->num_binary_archives_for_lookup];
   NSError *err = NULL;
   MTLPipelineOption options =
@@ -1124,7 +1130,7 @@ _MTLDevice_newRenderPipelineState(void *obj) {
 static NTSTATUS
 _MTLDevice_newMeshRenderPipelineState(void *obj) {
   struct unixcall_mtldevice_newmeshrenderpso *params = obj;
-  const struct WMTMeshRenderPipelineInfo *info = params->info.ptr;
+  const struct WMTMeshRenderPipelineInfo *info = WMT_GUEST_PTR(params->info);
   MTLMeshRenderPipelineDescriptor *descriptor = [[MTLMeshRenderPipelineDescriptor alloc] init];
 
   for (unsigned i = 0; i < 8; i++) {
@@ -1171,8 +1177,8 @@ _MTLDevice_newMeshRenderPipelineState(void *obj) {
   MTLPipelineOption options = MTLPipelineOptionNone;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
-    if (info->num_binary_archives_for_lookup && info->binary_archives_for_lookup.ptr)
-      descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)info->binary_archives_for_lookup.ptr
+    if (info->num_binary_archives_for_lookup && WMT_GUEST_PTR(info->binary_archives_for_lookup))
+      descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)WMT_GUEST_PTR(info->binary_archives_for_lookup)
                                                       count:info->num_binary_archives_for_lookup];
     options = info->fail_on_binary_archive_miss ? MTLPipelineOptionFailOnBinaryArchiveMiss : MTLPipelineOptionNone;
   }
@@ -1349,7 +1355,7 @@ static inline void wmt_census_batch(const struct wmtcmd_base *head, int kind) {
         else if (kind == 2 && t < WMT_CENSUS_BLIT) wmt_c_blit[t]++;
         if (capture && n < 64) { wmt_first_seq[n] = (unsigned short)t; wmt_first_kind = kind; }
         n++;
-        c = (const struct wmtcmd_base *)c->next.ptr;
+        c = WMT_GUEST_PTR(c->next);
     }
     if (capture) wmt_first_len = (unsigned)(n < 64 ? n : 64);
     wmt_records_total += n;
@@ -1400,7 +1406,7 @@ static uint32_t wmt_blit_cmd_size(unsigned type) {
 static NTSTATUS
 _MTLBlitCommandEncoder_encodeCommands(void *obj) {
   struct unixcall_generic_obj_cmd_noret *params = obj;
-  const struct wmtcmd_base *next = params->cmd_head.ptr;
+  const struct wmtcmd_base *next = WMT_GUEST_PTR(params->cmd_head);
   if (wmtr_enabled()) {
     /* Blit commands carry only handles and scalars, so each struct travels
      * verbatim as {type, size, bytes}; the guest-pointer `next` is not sent.
@@ -1412,7 +1418,7 @@ _MTLBlitCommandEncoder_encodeCommands(void *obj) {
     struct rm_arg_handle *ha = (void *)bbuf;
     ha->handle = params->encoder;
     size_t off = sizeof *ha;
-    for (const struct wmtcmd_base *c = next; c; c = c->next.ptr) {
+    for (const struct wmtcmd_base *c = next; c; c = WMT_GUEST_PTR(c->next)) {
       uint32_t sz = wmt_blit_cmd_size(c->type);
       if (!sz) {
         static unsigned told;
@@ -1518,7 +1524,7 @@ _MTLBlitCommandEncoder_encodeCommands(void *obj) {
     }
     }
 
-    next = next->next.ptr;
+    next = WMT_GUEST_PTR(next->next);
   }
   return STATUS_SUCCESS;
 }
@@ -1526,7 +1532,7 @@ _MTLBlitCommandEncoder_encodeCommands(void *obj) {
 static NTSTATUS
 _MTLComputeCommandEncoder_encodeCommands(void *obj) {
   struct unixcall_generic_obj_cmd_noret *params = obj;
-  const struct wmtcmd_base *next = params->cmd_head.ptr;
+  const struct wmtcmd_base *next = WMT_GUEST_PTR(params->cmd_head);
   wmt_census_batch(next, 1);
   id<MTLComputeCommandEncoder> encoder = (id<MTLComputeCommandEncoder>)params->encoder;
   MTLSize threadgroup_size = {0, 0, 0};
@@ -1580,7 +1586,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     case WMTComputeCommandSetBytes: {
       struct wmtcmd_compute_setbytes *body = (struct wmtcmd_compute_setbytes *)next;
       wmt_census_sidecar_bytes(body->length);
-      [encoder setBytes:body->bytes.ptr length:body->length atIndex:body->index];
+      [encoder setBytes:WMT_GUEST_PTR(body->bytes) length:body->length atIndex:body->index];
       break;
     }
     case WMTComputeCommandSetTexture: {
@@ -1600,7 +1606,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     }
     }
 
-    next = next->next.ptr;
+    next = WMT_GUEST_PTR(next->next);
   }
   return STATUS_SUCCESS;
 }
@@ -1608,7 +1614,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
 static NTSTATUS
 _MTLRenderCommandEncoder_encodeCommands(void *obj) {
   struct unixcall_generic_obj_cmd_noret *params = obj;
-  const struct wmtcmd_base *next = params->cmd_head.ptr;
+  const struct wmtcmd_base *next = WMT_GUEST_PTR(params->cmd_head);
   if (wmtr_enabled()) {
     /* Pack with the SAME packer the wire tests exercise: a second walker here
      * would prove nothing about either. The batch replays into the existing
@@ -1734,7 +1740,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     case WMTRenderCommandSetFragmentBytes: {
       struct wmtcmd_render_setbytes *body = (struct wmtcmd_render_setbytes *)next;
       wmt_census_sidecar_bytes(body->length);
-      [encoder setFragmentBytes:body->bytes.ptr length:body->length atIndex:body->index];
+      [encoder setFragmentBytes:WMT_GUEST_PTR(body->bytes) length:body->length atIndex:body->index];
       break;
     }
     case WMTRenderCommandSetFragmentTexture: {
@@ -1754,13 +1760,13 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     case WMTRenderCommandSetViewports: {
       struct wmtcmd_render_setviewports *body = (struct wmtcmd_render_setviewports *)next;
       wmt_census_viewports(body->viewport_count);
-      [encoder setViewports:(const MTLViewport *)body->viewports.ptr count:body->viewport_count];
+      [encoder setViewports:(const MTLViewport *)WMT_GUEST_PTR(body->viewports) count:body->viewport_count];
       break;
     }
     case WMTRenderCommandSetScissorRects: {
       struct wmtcmd_render_setscissorrects *body = (struct wmtcmd_render_setscissorrects *)next;
       wmt_census_scissors(body->rect_count);
-      [encoder setScissorRects:(const MTLScissorRect *)body->scissor_rects.ptr count:body->rect_count];
+      [encoder setScissorRects:(const MTLScissorRect *)WMT_GUEST_PTR(body->scissor_rects) count:body->rect_count];
       break;
     }
     case WMTRenderCommandSetPSO: {
@@ -1975,7 +1981,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     }
-    next = next->next.ptr;
+    next = WMT_GUEST_PTR(next->next);
   }
   return STATUS_SUCCESS;
 }
@@ -2037,7 +2043,8 @@ _MTLTexture_replaceRegion(void *obj) {
     uint64_t rows = params->size.height ? params->size.height : 1;
     uint64_t depth = params->size.depth ? params->size.depth : 1;
     uint64_t bytes = params->bytes_per_row * rows * depth;
-    if (bytes && bytes <= RM_CHUNK_BYTES - sizeof(struct rm_tex_replace) && params->data.ptr) {
+    const void *data = WMT_GUEST_PTR(params->data);
+    if (bytes && bytes <= RM_CHUNK_BYTES - sizeof(struct rm_tex_replace) && data) {
       uint8_t *msg = malloc(sizeof(struct rm_tex_replace) + bytes);
       if (msg) {
         struct rm_tex_replace *a = (void *)msg;
@@ -2047,7 +2054,7 @@ _MTLTexture_replaceRegion(void *obj) {
         a->level = (uint32_t)params->level; a->slice = (uint32_t)params->slice;
         a->bytes_per_row = (uint32_t)params->bytes_per_row;
         a->bytes_per_image = (uint32_t)params->bytes_per_image;
-        memcpy(msg + sizeof *a, params->data.ptr, bytes);
+        memcpy(msg + sizeof *a, data, bytes);
         wmtr_call(RM_OP_TEXTURE_REPLACE, msg, (uint32_t)(sizeof *a + bytes), 0, 0, 0);
         free(msg);
       }
@@ -2067,7 +2074,7 @@ _MTLTexture_replaceRegion(void *obj) {
                      )
          mipmapLevel:params->level
                slice:params->slice
-           withBytes:params->data.ptr
+           withBytes:WMT_GUEST_PTR(params->data)
          bytesPerRow:params->bytes_per_row
        bytesPerImage:params->bytes_per_image];
   return STATUS_SUCCESS;
@@ -2120,9 +2127,21 @@ static inline void madeira_log_present_cadence(const char *path, double after) {
      * counter (signal_arm64_ios.c, same binary) exposes exceptions/present.
      * Thousands per present = steady-state trap storm (suspect: guest CALL
      * pushes into trap-mode-protected callret memory at ~70us each). */
-    extern volatile int ios_exc_msg_count;
     static int last_exc_count = 0;
+    static long long last_wait_us, last_req_us;
+    static int last_wc, last_wt, last_rq;
+#if TARGET_OS_IOS
+    extern volatile int ios_exc_msg_count;
+    extern volatile long long ios_srv_wait_us, ios_srv_wait_req_us;
+    extern volatile int ios_srv_wait_count, ios_srv_wait_timeouts, ios_srv_req_count;
     int cur_exc = ios_exc_msg_count;
+    long long cur_wait_us = ios_srv_wait_us, cur_req_us = ios_srv_wait_req_us;
+    int cur_wc = ios_srv_wait_count, cur_wt = ios_srv_wait_timeouts, cur_rq = ios_srv_req_count;
+#else
+    int cur_exc = 0;
+    long long cur_wait_us = 0, cur_req_us = 0;
+    int cur_wc = 0, cur_wt = 0, cur_rq = 0;
+#endif
     int exc_delta = cur_exc - last_exc_count;
     last_exc_count = cur_exc;
     /* iOS-Madeira 2026-07-05: frame anatomy for the locked-60 push —
@@ -2130,11 +2149,6 @@ static inline void madeira_log_present_cadence(const char *path, double after) {
      * (server_ios.c, same binary). Deltas cover the 16 presents since
      * the last line. Answers: is the last ~1.5ms/frame server-request
      * WORK or wait-wake LATENCY? */
-    extern volatile long long ios_srv_wait_us, ios_srv_wait_req_us;
-    extern volatile int ios_srv_wait_count, ios_srv_wait_timeouts, ios_srv_req_count;
-    static long long last_wait_us, last_req_us; static int last_wc, last_wt, last_rq;
-    long long cur_wait_us = ios_srv_wait_us, cur_req_us = ios_srv_wait_req_us;
-    int cur_wc = ios_srv_wait_count, cur_wt = ios_srv_wait_timeouts, cur_rq = ios_srv_req_count;
     dprintf(STDERR_FILENO, "[iOS DXMT] Present #%llu t=%llu.%03lu after=%.4f (draws_since_last=%llu total_draws=%llu machexc_delta=%d srvw=%d/%d w_ms=%.1f wreq_ms=%.1f reqs=%d) [%s]\n",
             (unsigned long long)n,
             (unsigned long long)ts.tv_sec, (unsigned long)(ts.tv_nsec / 1000000),
@@ -2281,10 +2295,11 @@ static NTSTATUS
 _MTLCaptureManager_startCapture(void *obj) {
   struct unixcall_mtlcapturemanager_startcapture *params = obj;
   MTLCaptureDescriptor *desc = [[MTLCaptureDescriptor alloc] init];
-  const struct WMTCaptureInfo *info = params->info.ptr;
+  const struct WMTCaptureInfo *info = WMT_GUEST_PTR(params->info);
   desc.destination = (MTLCaptureDestination)info->destination;
   desc.captureObject = (id)info->capture_object;
-  NSString *path_str = [[NSString alloc] initWithCString:info->output_url.ptr encoding:NSUTF8StringEncoding];
+  NSString *path_str = [[NSString alloc] initWithCString:WMT_GUEST_PTR(info->output_url)
+                                                encoding:NSUTF8StringEncoding];
   NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
   desc.outputURL = url;
   [(MTLCaptureManager *)params->capture_manager startCaptureWithDescriptor:desc error:nil];
@@ -2348,7 +2363,7 @@ static NTSTATUS
 _MTLDevice_newTemporalScaler(void *obj) {
   struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
   MTLFXTemporalScalerDescriptor *desc = [[MTLFXTemporalScalerDescriptor alloc] init];
-  const struct WMTFXTemporalScalerInfo *info = params->info.ptr;
+  const struct WMTFXTemporalScalerInfo *info = WMT_GUEST_PTR(params->info);
   desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
   desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
   desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
@@ -2391,7 +2406,7 @@ static NTSTATUS
 _MTLDevice_newSpatialScaler(void *obj) {
   struct unixcall_mtldevice_newfxspatialscaler *params = obj;
   MTLFXSpatialScalerDescriptor *desc = [[MTLFXSpatialScalerDescriptor alloc] init];
-  const struct WMTFXSpatialScalerInfo *info = params->info.ptr;
+  const struct WMTFXSpatialScalerInfo *info = WMT_GUEST_PTR(params->info);
   desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
   desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
   desc.inputWidth = info->input_width;
@@ -2414,7 +2429,7 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   scaler.motionTexture = (id<MTLTexture>)params->motion;
   scaler.exposureTexture = (id<MTLTexture>)params->exposure;
   scaler.fence = (id<MTLFence>)params->fence;
-  const struct WMTFXTemporalScalerProps *props = params->props.ptr;
+  const struct WMTFXTemporalScalerProps *props = WMT_GUEST_PTR(params->props);
   scaler.inputContentWidth = props->input_content_width;
   scaler.inputContentHeight = props->input_content_height;
   scaler.reset = props->reset;
@@ -2443,7 +2458,8 @@ _MTLCommandBuffer_encodeSpatialScale(void *obj) {
 static NTSTATUS
 _NSString_string(void *obj) {
   struct unixcall_nsstring_string *params = obj;
-  NSString *str = [NSString stringWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
+  NSString *str = [NSString stringWithCString:WMT_GUEST_PTR(params->buffer_ptr)
+                                      encoding:(NSStringEncoding)params->encoding];
   params->ret = (obj_handle_t)str;
   return STATUS_SUCCESS;
 }
@@ -2451,7 +2467,8 @@ _NSString_string(void *obj) {
 static NTSTATUS
 _NSString_alloc_init(void *obj) {
   struct unixcall_nsstring_string *params = obj;
-  NSString *str = [[NSString alloc] initWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
+  NSString *str = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->buffer_ptr)
+                                           encoding:(NSStringEncoding)params->encoding];
   params->ret = (obj_handle_t)str;
   return STATUS_SUCCESS;
 }
@@ -2589,12 +2606,12 @@ _MetalLayer_setProps(void *obj) {
     uint8_t buf[sizeof(struct rm_wmt_info) + sizeof(struct WMTLayerProps)];
     struct rm_wmt_info *w = (void *)buf;
     w->owner = params->handle; w->info_len = sizeof(struct WMTLayerProps); w->extra_count = 0;
-    memcpy(buf + sizeof *w, params->arg.ptr, sizeof(struct WMTLayerProps));
+    memcpy(buf + sizeof *w, WMT_GUEST_PTR(params->arg), sizeof(struct WMTLayerProps));
     wmtr_call(RM_OP_LAYER_SET_PROPS, buf, sizeof buf, 0, 0, 0);
     return STATUS_SUCCESS;
   }
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
-  const struct WMTLayerProps *props = params->arg.ptr;
+  const struct WMTLayerProps *props = WMT_GUEST_PTR(params->arg);
   execute_on_main(^{
     layer.device = (id<MTLDevice>)props->device;
     layer.opaque = props->opaque;
@@ -2617,14 +2634,15 @@ _MetalLayer_getProps(void *obj) {
     if (wmtr_call(RM_OP_LAYER_GET_PROPS, 0, 0, &got, sizeof got, 0) == RM_OK) {
       /* The device stays the guest's own handle: the host's layer.device is a
        * host object and returning it would put an untagged id in guest hands. */
-      obj_handle_t keep = ((struct WMTLayerProps *)params->arg.ptr)->device;
-      memcpy(params->arg.ptr, &got, sizeof got);
-      ((struct WMTLayerProps *)params->arg.ptr)->device = keep;
+      struct WMTLayerProps *props = WMT_GUEST_PTR(params->arg);
+      obj_handle_t keep = props->device;
+      memcpy(props, &got, sizeof got);
+      props->device = keep;
     }
     return STATUS_SUCCESS;
   }
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
-  struct WMTLayerProps *props = params->arg.ptr;
+  struct WMTLayerProps *props = WMT_GUEST_PTR(params->arg);
   props->device = (obj_handle_t)layer.device;
   props->opaque = layer.opaque;
   props->framebuffer_only = layer.framebufferOnly;
@@ -3224,7 +3242,7 @@ _MTLLogContainer_enumerate(void *obj) {
   struct unixcall_enumerate *params = obj;
   uint64_t count = 0;
   uint64_t read = 0;
-  id *buffer = params->buffer.ptr;
+  id *buffer = WMT_GUEST_PTR(params->buffer);
   for (id _ in (id<MTLLogContainer>)params->enumeratable) {
     if (count >= params->start) {
       if (count < params->start + params->buffer_size) {
@@ -3390,7 +3408,7 @@ GetNSScreenForDisplayID(CGDirectDisplayID display_id) {
 static NTSTATUS
 _WMTGetDisplayDescription(void *obj) {
   struct unixcall_generic_obj_ptr_noret *params = obj;
-  struct WMTDisplayDescription *desc_out = params->arg.ptr;
+  struct WMTDisplayDescription *desc_out = WMT_GUEST_PTR(params->arg);
 #if TARGET_OS_IOS
   (void)params;
   desc_out->maximum_edr_color_component_value = 1.0;
@@ -3429,7 +3447,7 @@ static NTSTATUS
 _MetalLayer_getEDRValue(void *obj) {
   struct unixcall_generic_obj_ptr_noret *params = obj;
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
-  struct WMTEDRValue *value = params->arg.ptr;
+  struct WMTEDRValue *value = WMT_GUEST_PTR(params->arg);
   value->maximum_edr_color_component_value = 1.0;
   value->maximum_potential_edr_color_component_value = 1.0;
 
@@ -3460,9 +3478,9 @@ _MTLLibrary_newFunctionWithConstants(void *obj) {
   if (wmtr_enabled()) {
     /* Each constant's VALUE is inlined; the pointer inside WMTFunctionConstant
      * is a guest address and cannot cross. */
-    const char *nm = (const char *)params->name.ptr;
+    const char *nm = WMT_GUEST_PTR(params->name);
     size_t nlen = nm ? strlen(nm) : 0;
-    const struct WMTFunctionConstant *cs = params->constants.ptr;
+    const struct WMTFunctionConstant *cs = WMT_GUEST_PTR(params->constants);
     uint8_t buf[4096];
     struct rm_wmt_info *w = (void *)buf;
     size_t off = sizeof *w;
@@ -3477,7 +3495,7 @@ _MTLLibrary_newFunctionWithConstants(void *obj) {
         if (off + sizeof(struct rm_fn_const) + vlen > sizeof buf) break;
         struct rm_fn_const fc = { (uint16_t)cs[k].type, cs[k].index, vlen };
         memcpy(buf + off, &fc, sizeof fc); off += sizeof fc;
-        memcpy(buf + off, cs[k].data.ptr, vlen); off += vlen;
+        memcpy(buf + off, WMT_GUEST_PTR(cs[k].data), vlen); off += vlen;
         w->extra_count++;
       }
       struct rm_ret_handle r;
@@ -3487,12 +3505,14 @@ _MTLLibrary_newFunctionWithConstants(void *obj) {
     return STATUS_SUCCESS;
   }
   id<MTLLibrary> library = (id<MTLLibrary>)params->library;
-  NSString *name = [[NSString alloc] initWithCString:(char *)params->name.ptr encoding:NSUTF8StringEncoding];
-  struct WMTFunctionConstant *constants = (struct WMTFunctionConstant *)params->constants.ptr;
+  NSString *name = [[NSString alloc] initWithCString:(char *)WMT_GUEST_PTR(params->name)
+                                           encoding:NSUTF8StringEncoding];
+  struct WMTFunctionConstant *constants = WMT_GUEST_PTR(params->constants);
   NSError *err = NULL;
   MTLFunctionConstantValues *values = [[MTLFunctionConstantValues alloc] init];
   for (uint64_t i = 0; i < params->num_constants; i++)
-    [values setConstantValue:constants[i].data.ptr type:(MTLDataType)constants[i].type atIndex:constants[i].index];
+    [values setConstantValue:WMT_GUEST_PTR(constants[i].data)
+                        type:(MTLDataType)constants[i].type atIndex:constants[i].index];
 
   params->ret = (obj_handle_t)[library newFunctionWithName:name constantValues:values error:&err];
   params->ret_error = (obj_handle_t)err;
@@ -3505,7 +3525,7 @@ static NTSTATUS
 _WMTQueryDisplaySetting(void *obj) {
   struct unixcall_query_display_setting *params = obj;
   CGDirectDisplayID display_id = params->display_id;
-  struct WMTHDRMetadata *value = params->hdr_metadata.ptr;
+  struct WMTHDRMetadata *value = WMT_GUEST_PTR(params->hdr_metadata);
   params->ret = false;
   struct DisplaySetting *setting = &g_display_settings[display_id == CGMainDisplayID()];
   if (setting->version) {
@@ -3520,7 +3540,7 @@ static NTSTATUS
 _WMTUpdateDisplaySetting(void *obj) {
   struct unixcall_update_display_setting *params = obj;
   CGDirectDisplayID display_id = params->display_id;
-  const struct WMTHDRMetadata *value = params->hdr_metadata.ptr;
+  const struct WMTHDRMetadata *value = WMT_GUEST_PTR(params->hdr_metadata);
   struct DisplaySetting *setting = &g_display_settings[display_id == CGMainDisplayID()];
   if (value) {
     setting->hdr_metadata = *value;
@@ -3536,7 +3556,7 @@ static NTSTATUS
 _WMTQueryDisplaySettingForLayer(void *obj) {
   struct unixcall_query_display_setting_for_layer *params = obj;
   CAMetalLayer *layer = (CAMetalLayer *)params->layer;
-  struct WMTHDRMetadata *hdr_metadata_out = params->hdr_metadata.ptr;
+  struct WMTHDRMetadata *hdr_metadata_out = WMT_GUEST_PTR(params->hdr_metadata);
 
   params->version = 0;
 #if TARGET_OS_IOS
@@ -3654,7 +3674,13 @@ _SharedEventListener_destroy(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
   shared_event_listener_t q = (shared_event_listener_t)params->handle;
   if (q && q->runloop_ref) {
-    CFRunLoopStop(q->runloop_ref);
+    /* CFRunLoopStop only changes the run state.  If the listener is blocked
+     * in mach_msg waiting for an event, it does not wake up to observe that
+     * state change.  Wake it explicitly before dropping the listener or the
+     * Wine process can retain a live DXMT thread after the guest exits. */
+    CFRunLoopRef runloop = q->runloop_ref;
+    CFRunLoopStop(runloop);
+    CFRunLoopWakeUp(runloop);
     q->runloop_ref = NULL;
     [q->shared_listener release];
     q->shared_listener = nil;
@@ -3707,7 +3733,7 @@ _MTLBuffer_updateContents(void *obj) {
   if (wmtr_enabled()) {
     struct wmtr_buf *b = wmtr_buf_find(params->buffer);
     if (b && b->shadow && params->offset + params->length <= b->length) {
-      memcpy((char *)b->shadow + params->offset, params->data.ptr, params->length);
+      memcpy((char *)b->shadow + params->offset, WMT_GUEST_PTR(params->data), params->length);
       wmtr_buf_upload(params->buffer, (const char *)b->shadow + params->offset,
                       params->offset, params->length);
     } else if (!b) {
@@ -3716,7 +3742,8 @@ _MTLBuffer_updateContents(void *obj) {
     }
     return STATUS_SUCCESS;
   }
-  memcpy((void *)((char *)[(id<MTLBuffer>)params->buffer contents] + params->offset), params->data.ptr, params->length);
+  memcpy((void *)((char *)[(id<MTLBuffer>)params->buffer contents] + params->offset),
+         WMT_GUEST_PTR(params->data), params->length);
 #if !TARGET_OS_IOS
   /* Managed storage mode doesn't exist on iOS (unified memory). */
   if ([(id<MTLBuffer>)params->buffer storageMode] == MTLStorageModeManaged)
@@ -3750,8 +3777,9 @@ _MTLDevice_newBinaryArchive(void *obj) {
   NSString *path_str = NULL;
   NSURL *url = NULL;
   MTLBinaryArchiveDescriptor *desc = [[MTLBinaryArchiveDescriptor alloc] init];
-  if (params->url.ptr != NULL) {
-    path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
+  if (WMT_GUEST_PTR(params->url) != NULL) {
+    path_str = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->url)
+                                        encoding:NSUTF8StringEncoding];
     url = [[NSURL alloc] initFileURLWithPath:path_str];
     desc.url = url;
   }
@@ -3769,7 +3797,8 @@ _MTLDevice_newBinaryArchive(void *obj) {
 static NTSTATUS
 _MTLBinaryArchive_serialize(void *obj) {
   struct unixcall_mtlbinaryarchive_serialize *params = obj;
-  NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
+  NSString *path_str = [[NSString alloc] initWithCString:WMT_GUEST_PTR(params->url)
+                                               encoding:NSUTF8StringEncoding];
   NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
   NSError *err = NULL;
   [(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err];
@@ -3782,7 +3811,8 @@ _MTLBinaryArchive_serialize(void *obj) {
 static NTSTATUS
 _DispatchData_alloc_init(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
-  params->ret = (obj_handle_t)dispatch_data_create((void *)params->handle, params->arg, NULL, NULL);
+  params->ret = (obj_handle_t)dispatch_data_create(WMT_GUEST_RAW_PTR(params->handle),
+                                                   params->arg, NULL, NULL);
   return STATUS_SUCCESS;
 }
 
@@ -3797,7 +3827,7 @@ static NTSTATUS
 _MTLDevice_newSharedTexture(void *obj) {
   struct unixcall_mtldevice_newtexture *params = obj;
   id<MTLDevice> device = (id<MTLDevice>)params->device;
-  struct WMTTextureInfo *info = params->info.ptr;
+  struct WMTTextureInfo *info = WMT_GUEST_PTR(params->info);
 
   if (info->mach_port) {
     MTLSharedTextureHandle *handle = [[MTLSharedTextureHandle alloc] initWithMachPort:info->mach_port];
