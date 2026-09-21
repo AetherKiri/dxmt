@@ -138,8 +138,8 @@ public:
   HRESULT STDMETHODCALLTYPE GetLight(DWORD Index, D3DLIGHT9 *pLight) final;
   HRESULT STDMETHODCALLTYPE LightEnable(DWORD Index, BOOL Enable) final;
   HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, BOOL *pEnable) final;
-  HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD, const float *) final { static bool w=false; if(!w){Logger::warn("D3D9: SetClipPlane not implemented");w=true;} return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD, float *) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD Index, const float *pPlane) final;
+  HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD Index, float *pPlane) final;
 
   // Render state
   HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) final;
@@ -191,7 +191,10 @@ public:
                                                     const void *pVertexStreamZeroData,
                                                     UINT VertexStreamZeroStride) final;
 
-  HRESULT STDMETHODCALLTYPE ProcessVertices(UINT, UINT, UINT, IDirect3DVertexBuffer9 *, IDirect3DVertexDeclaration9 *, DWORD) final { static bool w=false; if(!w){Logger::warn("D3D9: stub ProcessVertices");w=true;} return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount,
+                                             IDirect3DVertexBuffer9 *pDestBuffer,
+                                             IDirect3DVertexDeclaration9 *pVertexDecl,
+                                             DWORD Flags) final;
 
   // Vertex declaration & shaders
   HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements,
@@ -206,17 +209,21 @@ public:
   HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9 **ppShader) final;
   HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) final;
   HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT StartRegister, float *pConstantData, UINT Vector4fCount) final;
-  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT, const int *, UINT) final { return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantI(UINT, int *, UINT) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT, const BOOL *, UINT) final { return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantB(UINT, BOOL *, UINT) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT StartRegister, const int *pConstantData,
+                                                      UINT Vector4iCount) final;
+  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantI(UINT StartRegister, int *pConstantData,
+                                                      UINT Vector4iCount) final;
+  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT StartRegister, const BOOL *pConstantData,
+                                                      UINT BoolCount) final;
+  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantB(UINT StartRegister, BOOL *pConstantData,
+                                                      UINT BoolCount) final;
 
   HRESULT STDMETHODCALLTYPE SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData,
                                              UINT OffsetInBytes, UINT Stride) final;
   HRESULT STDMETHODCALLTYPE GetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 **ppStreamData,
                                              UINT *pOffsetInBytes, UINT *pStride) final;
-  HRESULT STDMETHODCALLTYPE SetStreamSourceFreq(UINT, UINT) final { static bool w=false; if(!w){Logger::warn("D3D9: SetStreamSourceFreq not implemented");w=true;} return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetStreamSourceFreq(UINT, UINT *) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetStreamSourceFreq(UINT StreamNumber, UINT Setting) final;
+  HRESULT STDMETHODCALLTYPE GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting) final;
 
   HRESULT STDMETHODCALLTYPE SetIndices(IDirect3DIndexBuffer9 *pIndexData) final;
   HRESULT STDMETHODCALLTYPE GetIndices(IDirect3DIndexBuffer9 **ppIndexData) final;
@@ -226,10 +233,14 @@ public:
   HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9 **ppShader) final;
   HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) final;
   HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT StartRegister, float *pConstantData, UINT Vector4fCount) final;
-  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT, const int *, UINT) final { return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantI(UINT, int *, UINT) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT, const BOOL *, UINT) final { return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantB(UINT, BOOL *, UINT) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT StartRegister, const int *pConstantData,
+                                                     UINT Vector4iCount) final;
+  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantI(UINT StartRegister, int *pConstantData,
+                                                     UINT Vector4iCount) final;
+  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT StartRegister, const BOOL *pConstantData,
+                                                     UINT BoolCount) final;
+  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantB(UINT StartRegister, BOOL *pConstantData,
+                                                     UINT BoolCount) final;
 
   HRESULT STDMETHODCALLTYPE DrawRectPatch(UINT, const float *, const D3DRECTPATCH_INFO *) final { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE DrawTriPatch(UINT, const float *, const D3DTRIPATCH_INFO *) final { return D3DERR_INVALIDCALL; }
@@ -420,6 +431,22 @@ private:
 
   // Texture stage states (8 stages, 33 state types)
   DWORD texture_stage_states_[8][33] = {};
+
+  // User clip planes (6 planes, enabled through D3DRS_CLIPPLANEENABLE)
+  float clip_planes_[6][4] = {};
+  uint64_t clip_plane_version_ = 1;
+
+  // Integer and boolean shader constants (D3D9: 16 vectors / 16 booleans each)
+  int vs_const_i_[16][4] = {};
+  int ps_const_i_[16][4] = {};
+  BOOL vs_const_b_[16] = {};
+  BOOL ps_const_b_[16] = {};
+
+  // Vertex stream frequencies (D3D9 instancing)
+  DWORD stream_freqs_[16] = {};
+
+  // Render targets 1..3 (slot 0 keeps the full single-target path)
+  Com<IDirect3DSurface9> extra_render_targets_[3];
 
   // Transform matrices (indexed via TransformIndex)
   D3DMATRIX transforms_[512] = {};

@@ -620,9 +620,27 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateAdditionalSwapChain(
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
   FlushDrawBatch();
-  if (RenderTargetIndex != 0) {
-    Logger::warn(str::format("D3D9: SetRenderTarget index ", RenderTargetIndex, " not supported"));
+  if (RenderTargetIndex >= 4)
     return D3DERR_INVALIDCALL;
+  if (RenderTargetIndex != 0) {
+    /*
+     * Titles clear the MRT slots again when they go back to a single target,
+     * so a null surface for index > 0 is always accepted.  A real second
+     * target is remembered and reported back, but this layer still writes only
+     * render target 0 - which is what its caps advertise
+     * (NumSimultaneousRTs = 1) and why it says so once.
+     */
+    if (!pRenderTarget) {
+      extra_render_targets_[RenderTargetIndex - 1] = nullptr;
+      return S_OK;
+    }
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Logger::warn("D3D9: multiple render targets accepted, only render target 0 is written");
+    }
+    extra_render_targets_[RenderTargetIndex - 1] = pRenderTarget;
+    return S_OK;
   }
   if (!pRenderTarget) {
     // RT0 cannot be set to null
@@ -673,14 +691,17 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderTarget(DWORD RenderTargetIndex, I
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 **ppRenderTarget) {
-  if (RenderTargetIndex != 0 || !ppRenderTarget)
+  if (!ppRenderTarget || RenderTargetIndex >= 4)
     return D3DERR_INVALIDCALL;
-  if (current_rt_surface_) {
-    *ppRenderTarget = ref(current_rt_surface_.ptr());
-  } else {
-    // Fallback to backbuffer when using texture surface RT
-    *ppRenderTarget = ref(backbuffer_surface_.ptr());
+  *ppRenderTarget = nullptr;
+  if (RenderTargetIndex > 0) {
+    *ppRenderTarget = extra_render_targets_[RenderTargetIndex - 1].ref();
+    return *ppRenderTarget ? S_OK : D3DERR_INVALIDCALL;
   }
+
+  if (!current_rt_surface_)
+    return D3DERR_INVALIDCALL;
+  *ppRenderTarget = ref(current_rt_surface_.ptr());
   return S_OK;
 }
 
@@ -816,7 +837,6 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderState(D3DRENDERSTATETYPE State, D
   static bool warned[256] = {};
   if (!warned[State] && Value != 0) {
     switch (State) {
-    case D3DRS_SEPARATEALPHABLENDENABLE:
     case D3DRS_WRAP0: case D3DRS_WRAP1: case D3DRS_WRAP2: case D3DRS_WRAP3:
     case D3DRS_WRAP4: case D3DRS_WRAP5: case D3DRS_WRAP6: case D3DRS_WRAP7:
     case D3DRS_CLIPPING:
@@ -1977,9 +1997,15 @@ obj_handle_t D3D9Device::CreatePSO() {
   DWORD srcBlend = render_states_[D3DRS_SRCBLEND];
   DWORD destBlend = render_states_[D3DRS_DESTBLEND];
   DWORD blendOp = render_states_[D3DRS_BLENDOP];
-  DWORD srcBlendAlpha = render_states_[D3DRS_SRCBLENDALPHA];
-  DWORD destBlendAlpha = render_states_[D3DRS_DESTBLENDALPHA];
-  DWORD blendOpAlpha = render_states_[D3DRS_BLENDOPALPHA];
+  /*
+   * D3D9 applies the RGB factors to alpha unless separate alpha blending is
+   * enabled; reading the alpha-specific registers unconditionally gets the
+   * alpha channel wrong for every title that never sets them.
+   */
+  bool separateAlphaBlend = render_states_[D3DRS_SEPARATEALPHABLENDENABLE] != 0;
+  DWORD srcBlendAlpha = separateAlphaBlend ? render_states_[D3DRS_SRCBLENDALPHA] : srcBlend;
+  DWORD destBlendAlpha = separateAlphaBlend ? render_states_[D3DRS_DESTBLENDALPHA] : destBlend;
+  DWORD blendOpAlpha = separateAlphaBlend ? render_states_[D3DRS_BLENDOPALPHA] : blendOp;
   DWORD depthFmt = depth_stencil_ ? (DWORD)depth_stencil_format_ : 0;
   bool srgbWrite = render_states_[D3DRS_SRGBWRITEENABLE] != 0;
   uint8_t colorWriteMask = (uint8_t)(render_states_[D3DRS_COLORWRITEENABLE] & 0xF);
@@ -2031,9 +2057,9 @@ obj_handle_t D3D9Device::CreatePSO() {
     pipeline_info.colors[0].src_rgb_blend_factor = ConvertBlendFactor(srcBlend);
     pipeline_info.colors[0].dst_rgb_blend_factor = ConvertBlendFactor(destBlend);
     pipeline_info.colors[0].rgb_blend_operation = ConvertBlendOp(render_states_[D3DRS_BLENDOP]);
-    pipeline_info.colors[0].src_alpha_blend_factor = ConvertBlendFactor(render_states_[D3DRS_SRCBLENDALPHA]);
-    pipeline_info.colors[0].dst_alpha_blend_factor = ConvertBlendFactor(render_states_[D3DRS_DESTBLENDALPHA]);
-    pipeline_info.colors[0].alpha_blend_operation = ConvertBlendOp(render_states_[D3DRS_BLENDOPALPHA]);
+    pipeline_info.colors[0].src_alpha_blend_factor = ConvertBlendFactor(srcBlendAlpha);
+    pipeline_info.colors[0].dst_alpha_blend_factor = ConvertBlendFactor(destBlendAlpha);
+    pipeline_info.colors[0].alpha_blend_operation = ConvertBlendOp(blendOpAlpha);
   }
 
   // Depth format
@@ -4380,6 +4406,371 @@ HRESULT STDMETHODCALLTYPE D3D9StateBlock::Apply() {
   device_->ps_const_version_++;
   device_->ff_const_version_++;
   device_->ff_dirty_ |= D3D9Device::kFFDirtyAll;
+  return S_OK;
+}
+
+namespace {
+
+// D3D9 matrices are row-major and vertices are row vectors, so "apply A then B"
+// is the ordinary product A*B.
+D3DMATRIX MultiplyD3D9(const D3DMATRIX &a, const D3DMATRIX &b) {
+  D3DMATRIX r = {};
+  const float *av = &a._11, *bv = &b._11;
+  float *rv = &r._11;
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      float sum = 0.0f;
+      for (int k = 0; k < 4; k++)
+        sum += av[i * 4 + k] * bv[k * 4 + j];
+      rv[i * 4 + j] = sum;
+    }
+  }
+  return r;
+}
+
+void TransformRowVector(const D3DMATRIX &m, const float in[4], float out[4]) {
+  const float *mv = &m._11;
+  for (int j = 0; j < 4; j++) {
+    float sum = 0.0f;
+    for (int i = 0; i < 4; i++)
+      sum += in[i] * mv[i * 4 + j];
+    out[j] = sum;
+  }
+}
+
+bool ReadDeclType(const uint8_t *base, D3DDECLTYPE type, float out[4]) {
+  out[0] = out[1] = out[2] = 0.0f;
+  out[3] = 1.0f;
+  switch (type) {
+  case D3DDECLTYPE_FLOAT1: memcpy(out, base, 4); return true;
+  case D3DDECLTYPE_FLOAT2: memcpy(out, base, 8); return true;
+  case D3DDECLTYPE_FLOAT3: memcpy(out, base, 12); return true;
+  case D3DDECLTYPE_FLOAT4: memcpy(out, base, 16); return true;
+  case D3DDECLTYPE_D3DCOLOR: {
+    uint32_t c = *(const uint32_t *)base;
+    out[0] = ((c >> 16) & 0xFF) / 255.0f;
+    out[1] = ((c >> 8) & 0xFF) / 255.0f;
+    out[2] = (c & 0xFF) / 255.0f;
+    out[3] = ((c >> 24) & 0xFF) / 255.0f;
+    return true;
+  }
+  case D3DDECLTYPE_UBYTE4N: {
+    out[0] = base[0] / 255.0f; out[1] = base[1] / 255.0f;
+    out[2] = base[2] / 255.0f; out[3] = base[3] / 255.0f;
+    return true;
+  }
+  case D3DDECLTYPE_SHORT2N: {
+    const int16_t *s = (const int16_t *)base;
+    out[0] = s[0] / 32767.0f; out[1] = s[1] / 32767.0f; out[2] = 0.0f; out[3] = 1.0f;
+    return true;
+  }
+  case D3DDECLTYPE_USHORT2N: {
+    const uint16_t *s = (const uint16_t *)base;
+    out[0] = s[0] / 65535.0f; out[1] = s[1] / 65535.0f; out[2] = 0.0f; out[3] = 1.0f;
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+} // namespace
+
+/*
+ * ProcessVertices - run the fixed-function vertex stage on the CPU and write
+ * the result into a vertex buffer.
+ *
+ * The FF pipeline ends in a transformed, screen-space vertex (XYZRHW), which is
+ * what titles that use software processing for their 2D geometry ask for: the
+ * position goes through world*view*projection and the viewport transform, the
+ * fog factor is computed from the view-space depth, texture coordinates go
+ * through their stage's texture matrix, and every other element is copied
+ * through unchanged.  A destination declaration without a transformed position
+ * (there would be nowhere to put the result) and programmable vertex shaders
+ * are refused rather than approximated.
+ */
+HRESULT STDMETHODCALLTYPE D3D9Device::ProcessVertices(UINT SrcStartIndex, UINT DestIndex,
+                                                      UINT VertexCount,
+                                                      IDirect3DVertexBuffer9 *pDestBuffer,
+                                                      IDirect3DVertexDeclaration9 *pVertexDecl,
+                                                      DWORD Flags) {
+  FlushDrawBatch();
+  if (!pDestBuffer || !VertexCount)
+    return D3DERR_INVALIDCALL;
+
+  if (current_vs_) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Logger::warn("D3D9: ProcessVertices with a programmable vertex shader "
+                   "is not supported");
+    }
+    return D3DERR_INVALIDCALL;
+  }
+  if (!stream_sources_[0] || !stream_strides_[0])
+    return D3DERR_INVALIDCALL;
+
+  D3D9VertexDeclaration *decl = current_vdecl_.ptr();
+  if (pVertexDecl)
+    decl = static_cast<D3D9VertexDeclaration *>(pVertexDecl);
+  if (!decl) {
+    Logger::warn("D3D9: ProcessVertices needs a vertex declaration or FVF");
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT dstStride = 0;
+  bool hasPositionT = false;
+  for (const auto &elem : decl->elements()) {
+    if (elem.Stream == 0xFF)
+      break;
+    if (elem.Stream != 0)
+      continue;
+    dstStride = std::max<UINT>(dstStride, (UINT)elem.Offset + GetDecltypeSize((D3DDECLTYPE)elem.Type));
+    if (elem.Usage == D3DDECLUSAGE_POSITIONT)
+      hasPositionT = true;
+  }
+  if (!hasPositionT) {
+    Logger::warn("D3D9: ProcessVertices needs a transformed position (XYZRHW) "
+                 "in the destination declaration");
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT srcStride = stream_strides_[0];
+  void *srcData = nullptr;
+  HRESULT hr = stream_sources_[0]->Lock(stream_offsets_[0] + SrcStartIndex * srcStride,
+                                        VertexCount * srcStride, &srcData,
+                                        D3DLOCK_READONLY);
+  if (FAILED(hr))
+    return hr;
+
+  void *dstData = nullptr;
+  hr = pDestBuffer->Lock(DestIndex * dstStride, VertexCount * dstStride, &dstData,
+                         (Flags & D3DLOCK_DISCARD) ? D3DLOCK_DISCARD : 0);
+  if (FAILED(hr)) {
+    stream_sources_[0]->Unlock();
+    return hr;
+  }
+
+  D3DMATRIX world = transforms_[TransformIndex(D3DTS_WORLD)];
+  D3DMATRIX view = transforms_[TransformIndex(D3DTS_VIEW)];
+  D3DMATRIX proj = transforms_[TransformIndex(D3DTS_PROJECTION)];
+  D3DMATRIX worldView = MultiplyD3D9(world, view);
+  D3DMATRIX wvp = MultiplyD3D9(worldView, proj);
+
+  float vpX = (float)viewport_.X, vpY = (float)viewport_.Y;
+  float vpW = (float)viewport_.Width, vpH = (float)viewport_.Height;
+
+  bool fogEnabled = render_states_[D3DRS_FOGENABLE] != 0;
+  float fogStart = *(const float *)&render_states_[D3DRS_FOGSTART];
+  float fogEnd = *(const float *)&render_states_[D3DRS_FOGEND];
+  float fogDensity = *(const float *)&render_states_[D3DRS_FOGDENSITY];
+  DWORD fogMode = render_states_[D3DRS_FOGVERTEXMODE];
+
+  for (UINT v = 0; v < VertexCount; v++) {
+    const uint8_t *srcVertex = (const uint8_t *)srcData + (size_t)v * srcStride;
+    uint8_t *dstVertex = (uint8_t *)dstData + (size_t)v * dstStride;
+    memcpy(dstVertex, srcVertex, std::min(srcStride, dstStride));
+
+    float position[4] = {0, 0, 0, 1};
+    bool havePosition = false;
+
+    for (const auto &elem : decl->elements()) {
+      if (elem.Stream == 0xFF)
+        break;
+      if (elem.Stream != 0)
+        continue;
+
+      const uint8_t *srcElem = srcVertex + elem.Offset;
+      uint8_t *dstElem = dstVertex + elem.Offset;
+      float values[4];
+
+      if (elem.Usage == D3DDECLUSAGE_POSITION || elem.Usage == D3DDECLUSAGE_POSITIONT) {
+        if (!ReadDeclType(srcElem, (D3DDECLTYPE)elem.Type, values))
+          continue;
+        memcpy(position, values, sizeof(position));
+        havePosition = true;
+
+        float clip[4], viewSpace[4];
+        TransformRowVector(wvp, position, clip);
+        TransformRowVector(worldView, position, viewSpace);
+        float w = (clip[3] != 0.0f) ? clip[3] : 1.0f;
+
+        float out[4];
+        out[0] = (clip[0] / w * 0.5f + 0.5f) * vpW + vpX;
+        out[1] = (0.5f - clip[1] / w * 0.5f) * vpH + vpY;
+        out[2] = clip[2] / w;
+        out[3] = 1.0f / w;
+        memcpy(dstElem, out, sizeof(out));
+
+        if (fogEnabled) {
+          float depth = std::fabs(viewSpace[2]);
+          float fog = 1.0f;
+          if (fogMode == D3DFOG_LINEAR)
+            fog = (fogEnd > fogStart) ? (fogEnd - depth) / (fogEnd - fogStart) : 1.0f;
+          else if (fogMode == D3DFOG_EXP)
+            fog = std::exp(-depth * fogDensity);
+          else if (fogMode == D3DFOG_EXP2) {
+            float d = depth * fogDensity;
+            fog = std::exp(-d * d);
+          }
+          fog = std::min(1.0f, std::max(0.0f, fog));
+          /* The fog factor is written through the declared fog element if the
+           * declaration has one; otherwise it stays in the shader constant
+           * path like the FF rasterizer does. */
+          for (const auto &fogElem : decl->elements()) {
+            if (fogElem.Stream == 0xFF)
+              break;
+            if (fogElem.Usage == D3DDECLUSAGE_FOG) {
+              memcpy(dstVertex + fogElem.Offset, &fog, sizeof(float));
+              break;
+            }
+          }
+        }
+        continue;
+      }
+
+      if (elem.Usage == D3DDECLUSAGE_TEXCOORD) {
+        DWORD stage = elem.UsageIndex;
+        DWORD tci = texture_stage_states_[stage][D3DTSS_TEXCOORDINDEX];
+        DWORD ttff = texture_stage_states_[stage][D3DTSS_TEXTURETRANSFORMFLAGS];
+        if (ttff != D3DTTFF_DISABLE && (ttff & D3DTTFF_COUNT1) == 0 &&
+            ReadDeclType(srcElem, (D3DDECLTYPE)elem.Type, values)) {
+          D3DMATRIX texMatrix = transforms_[TransformIndex((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + stage))];
+          float transformed[4];
+          TransformRowVector(texMatrix, values, transformed);
+          memcpy(dstElem, transformed, std::min((size_t)GetDecltypeSize((D3DDECLTYPE)elem.Type), sizeof(transformed)));
+        }
+        (void)tci;
+        continue;
+      }
+    }
+    (void)havePosition;
+  }
+
+  pDestBuffer->Unlock();
+  stream_sources_[0]->Unlock();
+
+  MSE_TRACE_FILL("ProcessVertices ", VertexCount, " verts from ", SrcStartIndex, " to ", DestIndex);
+  return S_OK;
+}
+
+// User clip planes.  The coefficients are kept and reported back; the
+// fixed-function rasterizer has no clip-distance stage in this layer yet, so a
+// title that enables clipping still sees unclipped geometry.
+HRESULT STDMETHODCALLTYPE D3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
+  if (Index >= 6 || !pPlane)
+    return D3DERR_INVALIDCALL;
+  for (int i = 0; i < 4; i++)
+    clip_planes_[Index][i] = pPlane[i];
+  clip_plane_version_++;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
+  if (Index >= 6 || !pPlane)
+    return D3DERR_INVALIDCALL;
+  for (int i = 0; i < 4; i++)
+    pPlane[i] = clip_planes_[Index][i];
+  return S_OK;
+}
+
+// Integer shader constants (i# registers).
+HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexShaderConstantI(UINT StartRegister,
+                                                              const int *pConstantData,
+                                                              UINT Vector4iCount) {
+  if (StartRegister + Vector4iCount > 16 || (Vector4iCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  memcpy(&vs_const_i_[StartRegister][0], pConstantData, Vector4iCount * 4 * sizeof(int));
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetVertexShaderConstantI(UINT StartRegister,
+                                                              int *pConstantData,
+                                                              UINT Vector4iCount) {
+  if (StartRegister + Vector4iCount > 16 || (Vector4iCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  memcpy(pConstantData, &vs_const_i_[StartRegister][0], Vector4iCount * 4 * sizeof(int));
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexShaderConstantB(UINT StartRegister,
+                                                              const BOOL *pConstantData,
+                                                              UINT BoolCount) {
+  if (StartRegister + BoolCount > 16 || (BoolCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  for (UINT i = 0; i < BoolCount; i++)
+    vs_const_b_[StartRegister + i] = pConstantData[i] ? TRUE : FALSE;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetVertexShaderConstantB(UINT StartRegister,
+                                                              BOOL *pConstantData,
+                                                              UINT BoolCount) {
+  if (StartRegister + BoolCount > 16 || (BoolCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  for (UINT i = 0; i < BoolCount; i++)
+    pConstantData[i] = vs_const_b_[StartRegister + i];
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetPixelShaderConstantI(UINT StartRegister,
+                                                             const int *pConstantData,
+                                                             UINT Vector4iCount) {
+  if (StartRegister + Vector4iCount > 16 || (Vector4iCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  memcpy(&ps_const_i_[StartRegister][0], pConstantData, Vector4iCount * 4 * sizeof(int));
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetPixelShaderConstantI(UINT StartRegister,
+                                                             int *pConstantData,
+                                                             UINT Vector4iCount) {
+  if (StartRegister + Vector4iCount > 16 || (Vector4iCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  memcpy(pConstantData, &ps_const_i_[StartRegister][0], Vector4iCount * 4 * sizeof(int));
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetPixelShaderConstantB(UINT StartRegister,
+                                                             const BOOL *pConstantData,
+                                                             UINT BoolCount) {
+  if (StartRegister + BoolCount > 16 || (BoolCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  for (UINT i = 0; i < BoolCount; i++)
+    ps_const_b_[StartRegister + i] = pConstantData[i] ? TRUE : FALSE;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetPixelShaderConstantB(UINT StartRegister,
+                                                             BOOL *pConstantData,
+                                                             UINT BoolCount) {
+  if (StartRegister + BoolCount > 16 || (BoolCount && !pConstantData))
+    return D3DERR_INVALIDCALL;
+  for (UINT i = 0; i < BoolCount; i++)
+    pConstantData[i] = ps_const_b_[StartRegister + i];
+  return S_OK;
+}
+
+// Stream frequencies (D3D9 instancing).  The setting is recorded and reported
+// back; the draw path currently renders a single instance per draw.
+HRESULT STDMETHODCALLTYPE D3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
+  if (StreamNumber >= 16)
+    return D3DERR_INVALIDCALL;
+  stream_freqs_[StreamNumber] = Setting;
+  if (Setting != 1) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Logger::warn("D3D9: SetStreamSourceFreq (instancing) recorded but drawn as one instance");
+    }
+  }
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting) {
+  if (StreamNumber >= 16 || !pSetting)
+    return D3DERR_INVALIDCALL;
+  *pSetting = stream_freqs_[StreamNumber];
   return S_OK;
 }
 
