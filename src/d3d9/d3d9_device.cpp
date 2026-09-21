@@ -73,8 +73,10 @@ static D3D9BaseTexture9 *BaseTextureOf(IDirect3DBaseTexture9 *texture) {
 // tell apart from one that does and rejects its arguments.
 static void ConfTrace(const char *name, const void *a = nullptr, long b = 0) {
   if (getenv("MSE_D3D9_CONF_TRACE")) {
-    fprintf(stderr, "D3D9CONF %s a=%p b=%ld\n", name, a, b);
-    fflush(stderr);
+    // stdout rather than stderr: MSE forwards guest stdout into the run log,
+    // while a PE's stderr is not captured.
+    printf("D3D9CONF %s a=%p b=%ld\n", name, a, b);
+    fflush(stdout);
   }
 }
 
@@ -569,6 +571,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetSwapChain(UINT iSwapChain,
 }
 
 UINT STDMETHODCALLTYPE D3D9Device::GetNumberOfSwapChains() {
+  ConfTrace("GetNumberOfSwapChains", nullptr, (long)extra_swapchains_.size());
   return (UINT)(1 + extra_swapchains_.size());
 }
 

@@ -48,8 +48,8 @@ HRESULT STDMETHODCALLTYPE D3D9Volume::GetDesc(D3DVOLUME_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE D3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox,
                                              DWORD Flags) {
   if (getenv("MSE_D3D9_CONF_TRACE")) {
-    fprintf(stderr, "D3D9CONF VolumeLockBox a=%p level=%u\n", (void *)pLockedVolume, level_);
-    fflush(stderr);
+    printf("D3D9CONF VolumeLockBox a=%p level=%u\n", (void *)pLockedVolume, level_);
+    fflush(stdout);
   }
   return parent_->LockBox(level_, pLockedVolume, pBox, Flags);
 }

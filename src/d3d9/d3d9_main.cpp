@@ -7,7 +7,31 @@ Logger Logger::s_instance("d3d9.log");
 
 extern "C" IDirect3D9 *WINAPI Direct3DCreate9(UINT SDKVersion) {
   Logger::info("Direct3DCreate9 called");
+  /*
+   * Diagnosis: prove which module is loaded and whether the guest sees the
+   * host environment (the entry trace in the device is gated on it).
+   */
+  {
+    char module_path[MAX_PATH] = "?";
+    HMODULE self = GetModuleHandleA("d3d9.dll");
+    if (self)
+      GetModuleFileNameA(self, module_path, sizeof(module_path));
+    fprintf(stderr, "D3D9CONF module=%s conf_trace=%s\n", module_path,
+            getenv("MSE_D3D9_CONF_TRACE") ? "yes" : "no");
+    fflush(stderr);
+  }
   return new D3D9Interface();
+}
+
+/*
+ * Identity marker: lets a test (or a log) prove that the running Direct3D 9
+ * module is this driver and not Wine's builtin, which otherwise looks
+ * identical from the outside.
+ */
+#define MSE_D3D9_BUILD_TAG 0x4d534544u /* "MSED" */
+
+extern "C" unsigned long WINAPI MSE_D3D9BuildTag(void) {
+  return MSE_D3D9_BUILD_TAG;
 }
 
 extern "C" HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppDirect3D9Ex) {
