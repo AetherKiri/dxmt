@@ -2,6 +2,7 @@
 
 #include "com/com_object.hpp"
 #include "d3d9_debug_trace.hpp"
+#include "d3d9_getdc.hpp"
 #include "dxmt_texture.hpp"
 #include <d3d9.h>
 #include <cstdlib>
@@ -40,17 +41,12 @@ public:
   HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) final;
   HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final;
   HRESULT STDMETHODCALLTYPE UnlockRect() final;
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final {
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
-      DebugTraceBudget("MSE_TRACE_FILL")--;
-      Logger::warn(str::format("D3D9DC: D3D9Surface::GetDC called pool=", (int)pool_, " ",
-                               width_, "x", height_, " fmt=", (int)format_));
-    }
-    static bool warned = false;
-    if (!warned) { warned = true; Logger::warn("D3D9: surface GetDC is not implemented"); }
-    return D3DERR_INVALIDCALL;
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc) final {
+    UINT width = texture_ ? texture_->width() : width_;
+    UINT height = texture_ ? texture_->height() : height_;
+    return gdi_dc_.acquire(phdc, this, width, height, format_, texture_ != nullptr);
   }
-  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) final { return gdi_dc_.release(hdc); }
 
   Rc<Texture> &texture() { return texture_; }
   TextureViewKey viewKey() const { return viewKey_; }
@@ -81,6 +77,9 @@ private:
   // GPU readback for lockable render targets
   void *readback_mem_ = nullptr;
   UINT readback_pitch_ = 0;
+
+  // GDI DC support (see d3d9_getdc.hpp)
+  D3D9SurfaceDC gdi_dc_;
 };
 
 } // namespace dxmt

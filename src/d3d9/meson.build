@@ -5,6 +5,7 @@ d3d9_src = [
   'd3d9_interface.cpp',
   'd3d9_device.cpp',
   'd3d9_surface.cpp',
+  'd3d9_texture_ex.cpp',
   'd3d9_buffer.cpp',
   'd3d9_fixed_function.cpp',
 ]

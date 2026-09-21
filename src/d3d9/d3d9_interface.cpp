@@ -17,7 +17,8 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::QueryInterface(REFIID riid, void **ppvO
 
   *ppvObj = nullptr;
 
-  if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3D9)) {
+  if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3D9) ||
+      riid == __uuidof(IDirect3D9Ex)) {
     *ppvObj = ref(this);
     return S_OK;
   }
@@ -358,6 +359,101 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDevice(
     Logger::err("D3D9: Failed to create device");
     return D3DERR_INVALIDCALL;
   }
+}
+
+// IDirect3D9Ex
+
+UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterModeCountEx(
+    UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter) {
+  if (Adapter != 0 || !pFilter)
+    return 0;
+  return GetAdapterModeCount(Adapter, pFilter->Format);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModesEx(
+    UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter, UINT Mode,
+    D3DDISPLAYMODEEX *pMode) {
+  if (Adapter != 0 || !pFilter || !pMode)
+    return D3DERR_INVALIDCALL;
+
+  D3DDISPLAYMODE mode = {};
+  HRESULT hr = EnumAdapterModes(Adapter, pFilter->Format, Mode, &mode);
+  if (FAILED(hr))
+    return hr;
+
+  pMode->Size = sizeof(D3DDISPLAYMODEEX);
+  pMode->Width = mode.Width;
+  pMode->Height = mode.Height;
+  pMode->RefreshRate = mode.RefreshRate;
+  pMode->Format = mode.Format;
+  pMode->ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayModeEx(
+    UINT Adapter, D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) {
+  if (Adapter != 0 || !pMode)
+    return D3DERR_INVALIDCALL;
+
+  D3DDISPLAYMODE mode = {};
+  HRESULT hr = GetAdapterDisplayMode(Adapter, &mode);
+  if (FAILED(hr))
+    return hr;
+
+  pMode->Size = sizeof(D3DDISPLAYMODEEX);
+  pMode->Width = mode.Width;
+  pMode->Height = mode.Height;
+  pMode->RefreshRate = mode.RefreshRate;
+  pMode->Format = mode.Format;
+  pMode->ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+  if (pRotation)
+    *pRotation = D3DDISPLAYROTATION_IDENTITY;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDeviceEx(
+    UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags,
+    D3DPRESENT_PARAMETERS *pPresentationParameters,
+    D3DDISPLAYMODEEX *pFullscreenDisplayMode,
+    IDirect3DDevice9Ex **ppReturnedDeviceInterface) {
+  if (!ppReturnedDeviceInterface)
+    return D3DERR_INVALIDCALL;
+  *ppReturnedDeviceInterface = nullptr;
+
+  /*
+   * The layer presents through a Metal layer on the focus window, so the
+   * fullscreen display mode is informational: the windowed presentation
+   * parameters are what the device is built from.
+   */
+  if (pFullscreenDisplayMode) {
+    Logger::info(str::format("CreateDeviceEx: fullscreen mode ",
+                             pFullscreenDisplayMode->Width, "x",
+                             pFullscreenDisplayMode->Height, " ignored (windowed layer)"));
+  }
+
+  IDirect3DDevice9 *device = nullptr;
+  HRESULT hr = CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+                            pPresentationParameters, &device);
+  if (FAILED(hr))
+    return hr;
+
+  IDirect3DDevice9Ex *deviceEx = nullptr;
+  hr = device->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void **)&deviceEx);
+  device->Release();
+  if (FAILED(hr))
+    return hr;
+
+  *ppReturnedDeviceInterface = deviceEx;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterLUID(UINT Adapter, LUID *pLUID) {
+  if (Adapter != 0 || !pLUID)
+    return D3DERR_INVALIDCALL;
+
+  LUID luid = DXMT_D3D9_ADAPTER_LUID;
+  *pLUID = luid;
+  return S_OK;
 }
 
 } // namespace dxmt

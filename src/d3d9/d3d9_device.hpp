@@ -2,6 +2,8 @@
 
 #include "Metal.hpp"
 #include "d3d9_debug_trace.hpp"
+#include "d3d9_swapchain.hpp"
+#include "d3d9_texture_ex.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_buffer.hpp"
@@ -31,8 +33,9 @@ class D3D9VertexDeclaration;
 class D3D9Texture2D;
 class D3D9StateBlock;
 
-class D3D9Device final : public ComObjectWithInitialRef<IDirect3DDevice9> {
+class D3D9Device final : public ComObjectWithInitialRef<IDirect3DDevice9Ex> {
   friend class D3D9StateBlock;
+  friend class D3D9SwapChain;
 public:
   D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETERS *pParams);
   ~D3D9Device();
@@ -52,9 +55,9 @@ public:
   void STDMETHODCALLTYPE SetCursorPosition(int X, int Y, DWORD Flags) final;
   BOOL STDMETHODCALLTYPE ShowCursor(BOOL bShow) final;
 
-  HRESULT STDMETHODCALLTYPE CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *, IDirect3DSwapChain9 **) final { static bool w=false; if(!w){Logger::warn("D3D9: stub CreateAdditionalSwapChain");w=true;} return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetSwapChain(UINT, IDirect3DSwapChain9 **) final { static bool w=false; if(!w){Logger::warn("D3D9: stub GetSwapChain");w=true;} return D3DERR_INVALIDCALL; }
-  UINT STDMETHODCALLTYPE GetNumberOfSwapChains() final { return 1; }
+  HRESULT STDMETHODCALLTYPE CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *, IDirect3DSwapChain9 **) final;
+  HRESULT STDMETHODCALLTYPE GetSwapChain(UINT, IDirect3DSwapChain9 **) final;
+  UINT STDMETHODCALLTYPE GetNumberOfSwapChains() final;
 
   HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) final;
   HRESULT STDMETHODCALLTYPE Present(const RECT *, const RECT *, HWND, const RGNDATA *) final;
@@ -70,10 +73,14 @@ public:
   // Texture creation
   HRESULT STDMETHODCALLTYPE CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
                                            IDirect3DTexture9 **ppTexture, HANDLE *pSharedHandle) final;
-  HRESULT STDMETHODCALLTYPE CreateVolumeTexture(UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                                 IDirect3DVolumeTexture9 **, HANDLE *) final { static bool w=false; if(!w){Logger::warn("D3D9: stub CreateVolumeTexture");w=true;} return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                               IDirect3DCubeTexture9 **, HANDLE *) final { static bool w=false; if(!w){Logger::warn("D3D9: stub CreateCubeTexture");w=true;} return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE CreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels,
+                                                 DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
+                                                 IDirect3DVolumeTexture9 **ppVolumeTexture,
+                                                 HANDLE *pSharedHandle) final;
+  HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage,
+                                               D3DFORMAT Format, D3DPOOL Pool,
+                                               IDirect3DCubeTexture9 **ppCubeTexture,
+                                               HANDLE *pSharedHandle) final;
 
   // Buffers
   HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool,
@@ -91,38 +98,20 @@ public:
                                                        D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
                                                        BOOL Discard, IDirect3DSurface9 **ppSurface,
                                                        HANDLE *pSharedHandle) final;
-  HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *, const RECT *,
-                                           IDirect3DSurface9 *, const POINT *) final {
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
-      DebugTraceBudget("MSE_TRACE_FILL")--;
-      Logger::warn("D3D9RT: stub UpdateSurface called");
-    }
-    static bool w = false;
-    if (!w) { Logger::warn("D3D9: stub UpdateSurface"); w = true; }
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *pSourceSurface,
+                                           const RECT *pSourceRect,
+                                           IDirect3DSurface9 *pDestinationSurface,
+                                           const POINT *pDestPoint) final;
   HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                            IDirect3DBaseTexture9 *pDestinationTexture) final;
   HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSurface9 *pDestSurface) final;
-  HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT, IDirect3DSurface9 *) final {
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
-      DebugTraceBudget("MSE_TRACE_FILL")--;
-      Logger::warn("D3D9RT: stub GetFrontBufferData called");
-    }
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE GetFrontBufferData(UINT iSwapChain,
+                                                IDirect3DSurface9 *pDestSurface) final;
   HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
                                          IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                          D3DTEXTUREFILTERTYPE Filter) final;
-  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *, const RECT *, D3DCOLOR) final {
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
-      DebugTraceBudget("MSE_TRACE_FILL")--;
-      Logger::warn("D3D9RT: stub ColorFill called");
-    }
-    static bool w = false;
-    if (!w) { Logger::warn("D3D9: stub ColorFill"); w = true; }
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect,
+                                        D3DCOLOR Color) final;
   HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool,
                                                          IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle) final;
 
@@ -247,6 +236,51 @@ public:
   HRESULT STDMETHODCALLTYPE DeletePatch(UINT) final { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) final;
 
+  // IDirect3DDevice9Ex
+  HRESULT STDMETHODCALLTYPE SetConvolutionMonoKernel(UINT Width, UINT Height, float *pRows,
+                                                     float *pColumns) final;
+  HRESULT STDMETHODCALLTYPE ComposeRects(IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst,
+                                         IDirect3DVertexBuffer9 *pSrcRectDescs, UINT NumRects,
+                                         IDirect3DVertexBuffer9 *pDstRectDescs,
+                                         D3DCOMPOSERECTSOP Operation, INT Xoffset,
+                                         INT Yoffset) final;
+  HRESULT STDMETHODCALLTYPE PresentEx(const RECT *pSourceRect, const RECT *pDestRect,
+                                      HWND hDestWindowOverride, const RGNDATA *pDirtyRegion,
+                                      DWORD dwFlags) final;
+  HRESULT STDMETHODCALLTYPE GetGPUThreadPriority(INT *pPriority) final;
+  HRESULT STDMETHODCALLTYPE SetGPUThreadPriority(INT Priority) final;
+  HRESULT STDMETHODCALLTYPE WaitForVBlank(UINT iSwapChain) final;
+  HRESULT STDMETHODCALLTYPE CheckResourceResidency(IDirect3DResource9 **ppResourceArray,
+                                                   UINT32 NumResources) final;
+  HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT MaxLatency) final;
+  HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT *pMaxLatency) final;
+  HRESULT STDMETHODCALLTYPE CheckDeviceState(HWND hDestinationWindow) final;
+  HRESULT STDMETHODCALLTYPE CreateRenderTargetEx(UINT Width, UINT Height, D3DFORMAT Format,
+                                                 D3DMULTISAMPLE_TYPE MultiSample,
+                                                 DWORD MultisampleQuality, BOOL Lockable,
+                                                 IDirect3DSurface9 **ppSurface,
+                                                 HANDLE *pSharedHandle, DWORD Usage) final;
+  HRESULT STDMETHODCALLTYPE CreateOffscreenPlainSurfaceEx(UINT Width, UINT Height,
+                                                          D3DFORMAT Format, D3DPOOL Pool,
+                                                          IDirect3DSurface9 **ppSurface,
+                                                          HANDLE *pSharedHandle,
+                                                          DWORD Usage) final;
+  HRESULT STDMETHODCALLTYPE CreateDepthStencilSurfaceEx(UINT Width, UINT Height, D3DFORMAT Format,
+                                                        D3DMULTISAMPLE_TYPE MultiSample,
+                                                        DWORD MultisampleQuality, BOOL Discard,
+                                                        IDirect3DSurface9 **ppSurface,
+                                                        HANDLE *pSharedHandle,
+                                                        DWORD Usage) final;
+  HRESULT STDMETHODCALLTYPE ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters,
+                                    D3DDISPLAYMODEEX *pFullscreenDisplayMode) final;
+  HRESULT STDMETHODCALLTYPE GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX *pMode,
+                                             D3DDISPLAYROTATION *pRotation) final;
+
+  // Swap-chain entry points (D3D9SwapChain is a thin wrapper over these).
+  HRESULT SwapChainPresent(D3D9SwapChain *chain, const RECT *pSourceRect, const RECT *pDestRect,
+                           HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags);
+  HRESULT SwapChainFrontBufferData(D3D9SwapChain *chain, IDirect3DSurface9 *pDestSurface);
+
   // Internal accessors
   WMT::Device GetMTLDevice() { return dxmt_device_->device(); }
   CommandQueue &GetQueue() { return dxmt_device_->queue(); }
@@ -346,6 +380,10 @@ private:
   Rc<Presenter> presenter_;
   HUDState hud_;
 
+  Com<D3D9SwapChain> implicit_swapchain_;
+  std::vector<Com<D3D9SwapChain>> extra_swapchains_;
+  UINT max_frame_latency_ = 1;
+
   Rc<Texture> backbuffer_;
   TextureViewKey backbuffer_view_ = 0;
   Com<D3D9Surface> backbuffer_surface_;
@@ -371,7 +409,7 @@ private:
   DWORD render_states_[256] = {};
 
   // Texture bindings
-  Com<D3D9Texture2D> bound_textures_[16];
+  Com<IDirect3DBaseTexture9> bound_textures_[16];
   uint16_t tex_bound_mask_ = 0; // bitmask of stages with bound textures
   DWORD sampler_states_[16][14] = {};
 

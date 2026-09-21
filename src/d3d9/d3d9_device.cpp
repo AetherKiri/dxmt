@@ -52,6 +52,22 @@ static uint64_t g_frame_draw_indexed = 0;
 uint64_t g_frame_tex_lock = 0;
 static uint64_t g_frame_state_changes = 0;
 
+// Any bound texture (2D, cube or volume) is driven through one interface.
+static D3D9BaseTexture9 *BaseTextureOf(IDirect3DBaseTexture9 *texture) {
+  if (!texture)
+    return nullptr;
+  switch (texture->GetType()) {
+  case D3DRTYPE_TEXTURE:
+    return static_cast<D3D9Texture2D *>(static_cast<IDirect3DTexture9 *>(texture));
+  case D3DRTYPE_VOLUMETEXTURE:
+    return static_cast<D3D9Texture3D *>(static_cast<IDirect3DVolumeTexture9 *>(texture));
+  case D3DRTYPE_CUBETEXTURE:
+    return static_cast<D3D9TextureCube *>(static_cast<IDirect3DCubeTexture9 *>(texture));
+  default:
+    return nullptr;
+  }
+}
+
 static D3DMATRIX IdentityMatrix() {
   D3DMATRIX m = {};
   m._11 = m._22 = m._33 = m._44 = 1.0f;
@@ -146,6 +162,11 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
   // Create backbuffer
   CreateBackbuffer(present_params_.BackBufferWidth, present_params_.BackBufferHeight);
 
+  if (implicit_swapchain_)
+    implicit_swapchain_->setBackbuffer(backbuffer_, backbuffer_view_, backbuffer_surface_);
+  if (implicit_swapchain_)
+    implicit_swapchain_->setPresentParameters(present_params_);
+
   // Pre-allocate snapshot ring — no per-draw allocation
   snapshot_ring_.reset(new ShaderConstants[kSnapshotRingSize]);
 
@@ -154,6 +175,12 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
   current_rt_ = backbuffer_;
   current_rt_view_ = backbuffer_view_;
   current_rt_format_ = WMTPixelFormatBGRA8Unorm;
+
+  // The implicit swap chain wraps exactly this back buffer, so
+  // GetSwapChain(0)->GetBackBuffer(0) and GetBackBuffer(0, 0) are the same
+  // surface, as they are on real drivers.
+  implicit_swapchain_ = Com<D3D9SwapChain>::transfer(new D3D9SwapChain(
+      this, present_params_, backbuffer_, backbuffer_view_, backbuffer_surface_, true));
 
   // Auto-create depth stencil if requested
   if (present_params_.EnableAutoDepthStencil) {
@@ -424,7 +451,8 @@ HRESULT D3D9Device::CreateBackbuffer(UINT width, UINT height) {
 HRESULT STDMETHODCALLTYPE D3D9Device::QueryInterface(REFIID riid, void **ppvObj) {
   if (!ppvObj) return E_POINTER;
   *ppvObj = nullptr;
-  if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DDevice9)) {
+  if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DDevice9) ||
+      riid == __uuidof(IDirect3DDevice9Ex)) {
     *ppvObj = ref(this);
     return S_OK;
   }
@@ -500,9 +528,93 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentation
 
 HRESULT STDMETHODCALLTYPE D3D9Device::GetBackBuffer(
     UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9 **ppBackBuffer) {
-  if (iSwapChain != 0 || iBackBuffer != 0 || !ppBackBuffer)
+  if (iBackBuffer != 0 || !ppBackBuffer)
     return D3DERR_INVALIDCALL;
-  *ppBackBuffer = ref(backbuffer_surface_.ptr());
+
+  IDirect3DSwapChain9 *chain = nullptr;
+  if (FAILED(GetSwapChain(iSwapChain, &chain)))
+    return D3DERR_INVALIDCALL;
+
+  Com<IDirect3DSwapChain9> keep(chain);
+  return chain->GetBackBuffer(0, Type, ppBackBuffer);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetSwapChain(UINT iSwapChain,
+                                                   IDirect3DSwapChain9 **ppSwapChain) {
+  if (!ppSwapChain)
+    return D3DERR_INVALIDCALL;
+  *ppSwapChain = nullptr;
+
+  if (iSwapChain == 0) {
+    if (!implicit_swapchain_)
+      return D3DERR_INVALIDCALL;
+    *ppSwapChain = implicit_swapchain_.ref();
+    return S_OK;
+  }
+  if (iSwapChain - 1 >= extra_swapchains_.size())
+    return D3DERR_INVALIDCALL;
+
+  *ppSwapChain = extra_swapchains_[iSwapChain - 1].ref();
+  return S_OK;
+}
+
+UINT STDMETHODCALLTYPE D3D9Device::GetNumberOfSwapChains() {
+  return (UINT)(1 + extra_swapchains_.size());
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateAdditionalSwapChain(
+    D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DSwapChain9 **ppSwapChain) {
+  if (!pPresentationParameters || !ppSwapChain)
+    return D3DERR_INVALIDCALL;
+  *ppSwapChain = nullptr;
+
+  D3DPRESENT_PARAMETERS params = *pPresentationParameters;
+  WMTPixelFormat format = ConvertD3D9Format(params.BackBufferFormat);
+  if (format == WMTPixelFormatInvalid)
+    format = WMTPixelFormatBGRA8Unorm;
+
+  UINT width = params.BackBufferWidth;
+  UINT height = params.BackBufferHeight;
+  if (!width || !height)
+    wsi::getWindowSize(params.hDeviceWindow ? params.hDeviceWindow : hwnd_, &width, &height);
+  if (!width || !height)
+    return D3DERR_INVALIDCALL;
+
+  WMTTextureInfo info = {};
+  info.pixel_format = format;
+  info.width = width;
+  info.height = height;
+  info.depth = 1;
+  info.array_length = 1;
+  info.type = WMTTextureType2D;
+  info.mipmap_level_count = 1;
+  info.sample_count = 1;
+  info.usage = (WMTTextureUsage)(WMTTextureUsageRenderTarget | WMTTextureUsageShaderRead);
+  info.options = WMTResourceStorageModePrivate;
+
+  Rc<Texture> backbuffer = Rc(new Texture(info, dxmt_device_->device()));
+  backbuffer->rename(backbuffer->allocate({}));
+
+  TextureViewDescriptor viewDesc = {
+      .format = format,
+      .type = WMTTextureType2D,
+      .firstMiplevel = 0,
+      .miplevelCount = 1,
+      .firstArraySlice = 0,
+      .arraySize = 1,
+  };
+  TextureViewKey view = backbuffer->createView(viewDesc);
+
+  Com<D3D9Surface> surface = Com<D3D9Surface>::transfer(
+      new D3D9Surface(this, backbuffer, view, format));
+
+  Com<D3D9SwapChain> chain = Com<D3D9SwapChain>::transfer(new D3D9SwapChain(
+      this, params, backbuffer, view, surface, false));
+  extra_swapchains_.push_back(chain);
+
+  Logger::info(str::format("D3D9: CreateAdditionalSwapChain ", width, "x", height,
+                           " chain=", (unsigned)extra_swapchains_.size()));
+  *ppSwapChain = chain.ref();
   return S_OK;
 }
 
@@ -940,14 +1052,102 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
   return S_OK;
 }
 
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateVolumeTexture(
+    UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format,
+    D3DPOOL Pool, IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle) {
+  if (!ppVolumeTexture || !Width || !Height || !Depth)
+    return D3DERR_INVALIDCALL;
+  *ppVolumeTexture = nullptr;
+
+  auto mtlFormat = ConvertD3D9Format(Format);
+  if (mtlFormat == WMTPixelFormatInvalid) {
+    Logger::warn(str::format("D3D9: CreateVolumeTexture unsupported format ", (int)Format));
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT mipLevels = Levels;
+  if (mipLevels == 0)
+    mipLevels = (UINT)std::floor(
+                    std::log2((double)std::max(std::max(Width, Height), Depth))) + 1;
+
+  WMTTextureInfo info = {};
+  info.pixel_format = mtlFormat;
+  info.width = Width;
+  info.height = Height;
+  info.depth = Depth;
+  info.array_length = 1;
+  info.type = WMTTextureType3D;
+  info.mipmap_level_count = mipLevels;
+  info.sample_count = 1;
+  info.usage = WMTTextureUsageShaderRead;
+  info.options = WMTResourceStorageModeShared;
+
+  auto texture = Rc(new Texture(info, dxmt_device_->device()));
+  texture->rename(texture->allocate({}));
+
+  TextureViewDescriptor viewDesc = {
+      .format = mtlFormat,
+      .type = WMTTextureType3D,
+      .firstMiplevel = 0,
+      .miplevelCount = mipLevels,
+      .firstArraySlice = 0,
+      .arraySize = 1,
+  };
+  TextureViewKey viewKey = texture->createView(viewDesc);
+
+  *ppVolumeTexture = ref(new D3D9Texture3D(this, Width, Height, Depth, mipLevels, Format,
+                                           std::move(texture), viewKey));
+  MSE_TRACE_API("CreateVolumeTexture ", Width, "x", Height, "x", Depth, " lv=", mipLevels,
+                " fmt=", (int)Format);
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateCubeTexture(
+    UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
+    IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle) {
+  if (!ppCubeTexture || !EdgeLength)
+    return D3DERR_INVALIDCALL;
+  *ppCubeTexture = nullptr;
+
+  auto mtlFormat = ConvertD3D9Format(Format);
+  if (mtlFormat == WMTPixelFormatInvalid) {
+    Logger::warn(str::format("D3D9: CreateCubeTexture unsupported format ", (int)Format));
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT mipLevels = Levels;
+  if (mipLevels == 0)
+    mipLevels = (UINT)std::floor(std::log2((double)EdgeLength)) + 1;
+
+  WMTTextureInfo info = {};
+  info.pixel_format = mtlFormat;
+  info.width = EdgeLength;
+  info.height = EdgeLength;
+  info.depth = 1;
+  info.array_length = 6; // the six faces of a Metal cube texture
+  info.type = WMTTextureTypeCube;
+  info.mipmap_level_count = mipLevels;
+  info.sample_count = 1;
+  info.usage = WMTTextureUsageShaderRead;
+  info.options = WMTResourceStorageModeShared;
+
+  auto texture = Rc(new Texture(info, dxmt_device_->device()));
+  texture->rename(texture->allocate({}));
+
+  *ppCubeTexture = ref(new D3D9TextureCube(this, EdgeLength, mipLevels, Format,
+                                           std::move(texture)));
+  MSE_TRACE_API("CreateCubeTexture ", EdgeLength, " lv=", mipLevels, " fmt=", (int)Format);
+  return S_OK;
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_state_change_count++;
 #endif
   if (Stage >= 16) return D3DERR_INVALIDCALL;
-  auto *tex = static_cast<D3D9Texture2D *>(pTexture);
-  if (bound_textures_[Stage].ptr() == tex) return S_OK; // no-op
-  bound_textures_[Stage] = tex;
+  D3D9BaseTexture9 *tex = BaseTextureOf(pTexture);
+  if (bound_textures_[Stage].ptr() == pTexture) return S_OK; // no-op
+  bound_textures_[Stage] = pTexture;
   g_frame_state_changes++;
   if (tex) {
     // Only summarise the texture when the trace is actually on: debugStats()
@@ -963,9 +1163,9 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTextu
       if (nz) {
         DebugTraceBudget("MSE_TRACE_BINDNZ")--;
         Logger::info(str::format("D3D9BINDNZ: stage=", Stage, " tex=", (void *)tex, " ",
-                                 tex->width(), "x", tex->height(), " fmt=", (int)tex->format(),
-                                 " nz=", (double)nz, " of ",
-                                 (double)(tex->width() * tex->height() * 4)));
+                                 tex->baseWidth(), "x", tex->baseHeight(), " fmt=",
+                                 (int)tex->d3dFormat(), " nz=", (double)nz, " of ",
+                                 (double)(tex->baseWidth() * tex->baseHeight() * 4)));
       }
     }
   }
@@ -2509,16 +2709,19 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   bool forceUpload = MSE_ENV_FLAG("MSE_DEBUG_ALWAYSUPLOAD");
   for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
     uint32_t stage = __builtin_ctz(mask);
-    auto *tex = bound_textures_[stage].ptr();
+    auto *tex = BaseTextureOf(bound_textures_[stage].ptr());
+    if (!tex)
+      continue;
     if (forceUpload)
       tex->markAllDirty();
-    if (tex->isAnyDirty()) {
+    if (tex->anyDirty()) {
       auto &queue = dxmt_device_->queue();
-      tex->uploadDirtyLevelsStaged(tex->texture(), queue);
+      tex->uploadDirty(queue);
       static int forced = 0;
       if (forceUpload && forced++ < 8)
-        Logger::info(str::format("D3D9UP: forced re-upload of ", tex->width(), "x", tex->height(),
-                                 " fmt=", (int)tex->format(), " nz=", (double)tex->nonZeroBytes()));
+        Logger::info(str::format("D3D9UP: forced re-upload of ", tex->baseWidth(), "x",
+                                 tex->baseHeight(), " fmt=", (int)tex->d3dFormat(),
+                                 " nz=", (double)tex->nonZeroBytes()));
     }
   }
 #ifdef DXMT_PERF
@@ -2533,8 +2736,11 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
 
     for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
       uint32_t stage = __builtin_ctz(mask);
-      auto *tex = bound_textures_[stage].ptr();
-      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture().ptr(), tex->viewKey(), stage};
+      auto *tex = BaseTextureOf(bound_textures_[stage].ptr());
+      if (!tex)
+        continue;
+      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->gpuTexture().ptr(),
+                                                                tex->defaultView(), stage};
 
       SamplerKey samplerKey;
       memcpy(samplerKey.state, sampler_states_[stage], sizeof(samplerKey.state));
@@ -3162,9 +3368,10 @@ void D3D9Device::LogDrawDebugUp(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCo
   add(" | texmask=0x%02x", tex_bound_mask_);
   for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
     uint32_t stage = __builtin_ctz(mask);
-    auto *tex = bound_textures_[stage].ptr();
-    char stats[256];
-    tex->debugStats(stats, sizeof(stats));
+    auto *tex = BaseTextureOf(bound_textures_[stage].ptr());
+    char stats[256] = "unknown";
+    if (tex)
+      tex->debugStats(stats, sizeof(stats));
     add(" | stage%u=%s", stage, stats);
   }
 
@@ -3766,6 +3973,227 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
   return S_OK;
 }
 
+// UpdateSurface - copy a rectangular region between two surfaces.
+//
+// Both operands may be plain surfaces (CreateOffscreenPlainSurface,
+// CreateRenderTarget) or surfaces owned by a texture, so the region is resolved
+// generically: GPU-backed surfaces are copied through the blit encoder (which
+// is the only way to see what a render target actually holds), while
+// system-memory surfaces are copied on the CPU.
+namespace {
+struct D3D9SurfaceView {
+  Rc<Texture> texture;
+  TextureViewKey view = 0;
+  WMTPixelFormat format = WMTPixelFormatInvalid;
+  void *sys = nullptr;
+  UINT pitch = 0;
+  UINT width = 0;
+  UINT height = 0;
+  D3DFORMAT d3dFormat = D3DFMT_UNKNOWN;
+  D3DPOOL pool = D3DPOOL_DEFAULT;
+  bool gpu = false;
+
+  bool resolve(IDirect3DSurface9 *surface) {
+    D3DSURFACE_DESC desc = {};
+    if (!surface || FAILED(surface->GetDesc(&desc)))
+      return false;
+    width = desc.Width;
+    height = desc.Height;
+    d3dFormat = desc.Format;
+    pool = desc.Pool;
+
+    IDirect3DTexture9 *texture9 = nullptr;
+    if (SUCCEEDED(surface->GetContainer(__uuidof(IDirect3DTexture9), (void **)&texture9))) {
+      auto *textureSurface = static_cast<D3D9TextureSurface *>(surface);
+      texture = textureSurface->texture();
+      view = textureSurface->viewKey();
+      format = textureSurface->mtlFormat();
+      gpu = true;
+      texture9->Release();
+      return true;
+    }
+
+    auto *plain = static_cast<D3D9Surface *>(surface);
+    sys = plain->sysMemData();
+    pitch = plain->pitch();
+    texture = plain->texture();
+    view = plain->viewKey();
+    format = plain->mtlFormat();
+    gpu = texture != nullptr;
+    return gpu || sys != nullptr;
+  }
+};
+} // namespace
+
+HRESULT STDMETHODCALLTYPE D3D9Device::UpdateSurface(
+    IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
+    IDirect3DSurface9 *pDestinationSurface, const POINT *pDestPoint) {
+  FlushDrawBatch();
+  if (!pSourceSurface || !pDestinationSurface)
+    return D3DERR_INVALIDCALL;
+
+  D3D9SurfaceView src, dst;
+  if (!src.resolve(pSourceSurface) || !dst.resolve(pDestinationSurface))
+    return D3DERR_INVALIDCALL;
+
+  UINT sx = pSourceRect ? (UINT)pSourceRect->left : 0;
+  UINT sy = pSourceRect ? (UINT)pSourceRect->top : 0;
+  UINT copyWidth = pSourceRect ? (UINT)(pSourceRect->right - pSourceRect->left) : src.width;
+  UINT copyHeight = pSourceRect ? (UINT)(pSourceRect->bottom - pSourceRect->top) : src.height;
+  UINT dx = pDestPoint ? (UINT)pDestPoint->x : 0;
+  UINT dy = pDestPoint ? (UINT)pDestPoint->y : 0;
+
+  if (!copyWidth || !copyHeight)
+    return D3DERR_INVALIDCALL;
+  if (sx + copyWidth > src.width || sy + copyHeight > src.height ||
+      dx + copyWidth > dst.width || dy + copyHeight > dst.height) {
+    Logger::warn("D3D9: UpdateSurface region outside the surface");
+    return D3DERR_INVALIDCALL;
+  }
+
+  MSE_TRACE_FILL("UpdateSurface src=", (void *)pSourceSurface, " dst=",
+                 (void *)pDestinationSurface, " ", copyWidth, "x", copyHeight);
+
+  if (src.gpu && dst.gpu) {
+    auto &queue = dxmt_device_->queue();
+    auto chunk = queue.CurrentChunk();
+    chunk->emitcc([srcTex = src.texture, dstTex = dst.texture, sx, sy, dx, dy,
+                   copyWidth, copyHeight](ArgumentEncodingContext &ctx) mutable {
+      ctx.startBlitPass();
+      auto srcHandle = ctx.access(srcTex, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto dstHandle = ctx.access(dstTex, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_WRITE);
+      auto &blitCmd = ctx.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
+      blitCmd.type = WMTBlitCommandCopyFromTextureToTexture;
+      blitCmd.src = srcHandle;
+      blitCmd.src_slice = 0;
+      blitCmd.src_level = 0;
+      blitCmd.src_origin = {sx, sy, 0};
+      blitCmd.src_size = {copyWidth, copyHeight, 1};
+      blitCmd.dst = dstHandle;
+      blitCmd.dst_slice = 0;
+      blitCmd.dst_level = 0;
+      blitCmd.dst_origin = {dx, dy, 0};
+      ctx.endPass();
+    });
+    return S_OK;
+  }
+
+  if (!src.sys || !dst.sys) {
+    // One side is GPU-only and the other system memory: go through the
+    // texture's staging memory, which every D3D9 texture keeps here.
+    Logger::warn("D3D9: UpdateSurface between GPU and system memory is not "
+                 "supported for this pair");
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT bytesPerPixel = D3D9FormatBytesPerPixel(src.d3dFormat);
+  if (!bytesPerPixel || src.d3dFormat != dst.d3dFormat) {
+    Logger::warn(str::format("D3D9: UpdateSurface format mismatch src=", (int)src.d3dFormat,
+                             " dst=", (int)dst.d3dFormat));
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT rowBytes = copyWidth * bytesPerPixel;
+  const uint8_t *srcBytes = (const uint8_t *)src.sys;
+  uint8_t *dstBytes = (uint8_t *)dst.sys;
+  for (UINT row = 0; row < copyHeight; row++) {
+    std::memcpy(dstBytes + (dy + row) * dst.pitch + dx * bytesPerPixel,
+                srcBytes + (sy + row) * src.pitch + sx * bytesPerPixel, rowBytes);
+  }
+  return S_OK;
+}
+
+// ColorFill - fill a surface (or a rectangle inside it) with a colour.
+//
+// A full-surface fill is a clear on the render pass that owns the surface,
+// which is the fast path a title uses to blank a back buffer or an offscreen
+// surface.  A sub-rectangle is filled on the CPU when the surface has system
+// memory to write; otherwise the whole surface is cleared and the difference
+// is reported once.
+HRESULT STDMETHODCALLTYPE D3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect,
+                                               D3DCOLOR Color) {
+  FlushDrawBatch();
+  if (!pSurface)
+    return D3DERR_INVALIDCALL;
+
+  D3D9SurfaceView view;
+  if (!view.resolve(pSurface))
+    return D3DERR_INVALIDCALL;
+
+  MSE_TRACE_FILL("ColorFill surface=", (void *)pSurface, " color=0x", (unsigned)Color);
+
+  bool fullSurface = !pRect || (pRect->left <= 0 && pRect->top <= 0 &&
+                                (LONG)pRect->right >= (LONG)view.width &&
+                                (LONG)pRect->bottom >= (LONG)view.height);
+
+  if (view.gpu) {
+    if (!fullSurface) {
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        Logger::warn("D3D9: ColorFill with a sub-rectangle clears the whole surface");
+      }
+    }
+    float r = ((Color >> 16) & 0xFF) / 255.0f;
+    float g = ((Color >> 8) & 0xFF) / 255.0f;
+    float b = ((Color >> 0) & 0xFF) / 255.0f;
+    float a = ((Color >> 24) & 0xFF) / 255.0f;
+
+    auto &queue = dxmt_device_->queue();
+    auto chunk = queue.CurrentChunk();
+    chunk->emitcc([r, g, b, a, tex = view.texture,
+                   viewKey = view.view](ArgumentEncodingContext &ctx) mutable {
+      ctx.clearColor(std::move(tex), viewKey, 1, {r, g, b, a});
+    });
+    return S_OK;
+  }
+
+  if (!view.sys)
+    return D3DERR_INVALIDCALL;
+
+  UINT bytesPerPixel = D3D9FormatBytesPerPixel(view.d3dFormat);
+  if (bytesPerPixel != 4 && bytesPerPixel != 2 && bytesPerPixel != 1)
+    return D3DERR_INVALIDCALL;
+
+  UINT x0 = fullSurface ? 0 : (UINT)std::max<LONG>(pRect->left, 0);
+  UINT y0 = fullSurface ? 0 : (UINT)std::max<LONG>(pRect->top, 0);
+  UINT x1 = fullSurface ? view.width : (UINT)std::min<LONG>(pRect->right, (LONG)view.width);
+  UINT y1 = fullSurface ? view.height : (UINT)std::min<LONG>(pRect->bottom, (LONG)view.height);
+  if (x1 <= x0 || y1 <= y0)
+    return S_OK;
+
+  uint8_t *base = (uint8_t *)view.sys;
+  for (UINT y = y0; y < y1; y++) {
+    uint8_t *row = base + y * view.pitch;
+    switch (bytesPerPixel) {
+    case 4:
+      for (UINT x = x0; x < x1; x++)
+        ((uint32_t *)row)[x] = (uint32_t)Color;
+      break;
+    case 2:
+      for (UINT x = x0; x < x1; x++)
+        ((uint16_t *)row)[x] = (uint16_t)Color;
+      break;
+    default:
+      std::memset(row + x0, (int)(Color & 0xFF), x1 - x0);
+      break;
+    }
+  }
+  return S_OK;
+}
+
+// GetFrontBufferData - read the presented image back into a system-memory
+// surface.  The front buffer of a windowed swap chain is the back buffer that
+// was last presented, so this is the render-target readback path.
+HRESULT STDMETHODCALLTYPE D3D9Device::GetFrontBufferData(UINT iSwapChain,
+                                                        IDirect3DSurface9 *pDestSurface) {
+  if (iSwapChain != 0 || !pDestSurface)
+    return D3DERR_INVALIDCALL;
+  if (!implicit_swapchain_)
+    return D3DERR_INVALIDCALL;
+  return SwapChainFrontBufferData(implicit_swapchain_.ptr(), pDestSurface);
+}
+
 // UpdateTexture - copy mip data from src to dst texture
 HRESULT STDMETHODCALLTYPE D3D9Device::UpdateTexture(
     IDirect3DBaseTexture9 *pSourceTexture,
@@ -3952,6 +4380,299 @@ HRESULT STDMETHODCALLTYPE D3D9StateBlock::Apply() {
   device_->ps_const_version_++;
   device_->ff_const_version_++;
   device_->ff_dirty_ |= D3D9Device::kFFDirtyAll;
+  return S_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Swap chains
+// ---------------------------------------------------------------------------
+
+HRESULT D3D9Device::SwapChainPresent(D3D9SwapChain *chain, const RECT *pSourceRect,
+                                     const RECT *pDestRect, HWND hDestWindowOverride,
+                                     const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  if (!chain)
+    return D3DERR_INVALIDCALL;
+
+  if (!chain->implicit()) {
+    // Copy the extra chain's back buffer into the device's so the frame is
+    // visible; a second window in the title ends up drawn into the focus
+    // window, which is the limit of a single-layer presenter.
+    if (hDestWindowOverride && hDestWindowOverride != hwnd_) {
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        Logger::warn("D3D9: presenting an additional swap chain to a foreign window "
+                     "is not supported; drawing into the focus window");
+      }
+    }
+    FlushDrawBatch();
+
+    auto &queue = dxmt_device_->queue();
+    auto chunk = queue.CurrentChunk();
+    chunk->emitcc([src = chain->backbuffer(), dst = backbuffer_](ArgumentEncodingContext &ctx) mutable {
+      ctx.startBlitPass();
+      auto srcHandle = ctx.access(src, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto dstHandle = ctx.access(dst, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_WRITE);
+      auto &blitCmd = ctx.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
+      blitCmd.type = WMTBlitCommandCopyFromTextureToTexture;
+      blitCmd.src = srcHandle;
+      blitCmd.src_slice = 0;
+      blitCmd.src_level = 0;
+      blitCmd.src_origin = {0, 0, 0};
+      blitCmd.src_size = {src->width(), src->height(), 1};
+      blitCmd.dst = dstHandle;
+      blitCmd.dst_slice = 0;
+      blitCmd.dst_level = 0;
+      blitCmd.dst_origin = {0, 0, 0};
+      ctx.endPass();
+    });
+  }
+
+  return Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+}
+
+HRESULT D3D9Device::SwapChainFrontBufferData(D3D9SwapChain *chain,
+                                             IDirect3DSurface9 *pDestSurface) {
+  if (!chain || !chain->surface())
+    return D3DERR_INVALIDCALL;
+  return GetRenderTargetData(chain->surface(), pDestSurface);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::Present(const RECT *pSourceRect,
+                                                const RECT *pDestRect,
+                                                HWND hDestWindowOverride,
+                                                const RGNDATA *pDirtyRegion,
+                                                DWORD dwFlags) {
+  return device_->SwapChainPresent(this, pSourceRect, pDestRect, hDestWindowOverride,
+                                   pDirtyRegion, dwFlags);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
+  return device_->SwapChainFrontBufferData(this, pDestSurface);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetBackBuffer(UINT iBackBuffer,
+                                                      D3DBACKBUFFER_TYPE Type,
+                                                      IDirect3DSurface9 **ppBackBuffer) {
+  if (iBackBuffer != 0 || !ppBackBuffer)
+    return D3DERR_INVALIDCALL;
+  *ppBackBuffer = ref(surface_.ptr());
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetRasterStatus(D3DRASTER_STATUS *pRasterStatus) {
+  if (!pRasterStatus)
+    return D3DERR_INVALIDCALL;
+  pRasterStatus->InVBlank = FALSE;
+  pRasterStatus->ScanLine = 0;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetDisplayMode(D3DDISPLAYMODE *pMode) {
+  return device_->GetDisplayMode(0, pMode);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetDevice(IDirect3DDevice9 **ppDevice) {
+  if (!ppDevice)
+    return D3DERR_INVALIDCALL;
+  *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9SwapChain::GetPresentParameters(
+    D3DPRESENT_PARAMETERS *pPresentationParameters) {
+  if (!pPresentationParameters)
+    return D3DERR_INVALIDCALL;
+  *pPresentationParameters = params_;
+  return S_OK;
+}
+
+// ---------------------------------------------------------------------------
+// IDirect3DDevice9Ex
+// ---------------------------------------------------------------------------
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetConvolutionMonoKernel(UINT Width, UINT Height,
+                                                              float *pRows, float *pColumns) {
+  /*
+   * Convolution kernels belong to the DX8-era monolithic filter path; the
+   * shader-based texture stages here implement D3DTSS_COLOROP/ALPHAOP instead.
+   * Store nothing and accept the call so titles that set a kernel up once do
+   * not fail; nothing samples through it.
+   */
+  static bool warned = false;
+  if (!warned) {
+    warned = true;
+    Logger::warn("D3D9: SetConvolutionMonoKernel accepted but not applied");
+  }
+  (void)Width;
+  (void)Height;
+  (void)pRows;
+  (void)pColumns;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::ComposeRects(
+    IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst, IDirect3DVertexBuffer9 *pSrcRectDescs,
+    UINT NumRects, IDirect3DVertexBuffer9 *pDstRectDescs, D3DCOMPOSERECTSOP Operation,
+    INT Xoffset, INT Yoffset) {
+  if (!pSrc || !pDst || !pSrcRectDescs || !pDstRectDescs)
+    return D3DERR_INVALIDCALL;
+  if (Operation != D3DCOMPOSERECTS_COPY)
+    return D3DERR_INVALIDCALL;
+
+  /*
+   * Each descriptor is a D3DCOMPOSERECTDESC {USHORT x, y; USHORT width, height}
+   * in the vertex buffers.  Composing copies is exactly StretchRect per rect,
+   * so a title that composes text or UI rects gets real pixels.
+   */
+  // The mingw headers only declare D3DCOMPOSERECTSOP, not the descriptor
+  // struct the vertex buffers carry; the layout is fixed by D3D9.
+  struct ComposeRectDesc {
+    USHORT X;
+    USHORT Y;
+    USHORT Width;
+    USHORT Height;
+  };
+  ComposeRectDesc *srcDescs = nullptr;
+  ComposeRectDesc *dstDescs = nullptr;
+  if (FAILED(pSrcRectDescs->Lock(0, 0, (void **)&srcDescs, D3DLOCK_READONLY)))
+    return D3DERR_INVALIDCALL;
+  if (FAILED(pDstRectDescs->Lock(0, 0, (void **)&dstDescs, D3DLOCK_READONLY))) {
+    pSrcRectDescs->Unlock();
+    return D3DERR_INVALIDCALL;
+  }
+
+  HRESULT hr = S_OK;
+  for (UINT i = 0; i < NumRects; i++) {
+    RECT src = {srcDescs[i].X, srcDescs[i].Y,
+                (LONG)(srcDescs[i].X + srcDescs[i].Width),
+                (LONG)(srcDescs[i].Y + srcDescs[i].Height)};
+    RECT dst = {(LONG)(dstDescs[i].X + Xoffset), (LONG)(dstDescs[i].Y + Yoffset),
+                (LONG)(dstDescs[i].X + Xoffset + dstDescs[i].Width),
+                (LONG)(dstDescs[i].Y + Yoffset + dstDescs[i].Height)};
+    hr = StretchRect(pSrc, &src, pDst, &dst, D3DTEXF_NONE);
+    if (FAILED(hr))
+      break;
+  }
+
+  pDstRectDescs->Unlock();
+  pSrcRectDescs->Unlock();
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::PresentEx(const RECT *pSourceRect, const RECT *pDestRect,
+                                               HWND hDestWindowOverride,
+                                               const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  // D3DPRESENT_DONOTWAIT / D3DPRESENT_LINEAR_CONTENT describe presentation
+  // hints; the Metal layer presents synchronously either way.
+  (void)dwFlags;
+  return Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetGPUThreadPriority(INT *pPriority) {
+  if (!pPriority)
+    return D3DERR_INVALIDCALL;
+  *pPriority = 0;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetGPUThreadPriority(INT Priority) {
+  if (Priority < -7 || Priority > 7)
+    return D3DERR_INVALIDCALL;
+  // The TCTI CPU thread runs the guest; the GPU work is already asynchronous.
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::WaitForVBlank(UINT iSwapChain) {
+  if (iSwapChain != 0)
+    return D3DERR_INVALIDCALL;
+  // Presentation is already throttled by the layer's vsync interval.
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CheckResourceResidency(
+    IDirect3DResource9 **ppResourceArray, UINT32 NumResources) {
+  (void)ppResourceArray;
+  (void)NumResources;
+  // Everything the layer allocates is backed by a resident Metal resource.
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::SetMaximumFrameLatency(UINT MaxLatency) {
+  if (MaxLatency > 30)
+    return D3DERR_INVALIDCALL;
+  max_frame_latency_ = MaxLatency ? MaxLatency : 1;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetMaximumFrameLatency(UINT *pMaxLatency) {
+  if (!pMaxLatency)
+    return D3DERR_INVALIDCALL;
+  *pMaxLatency = max_frame_latency_;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CheckDeviceState(HWND hDestinationWindow) {
+  if (hDestinationWindow && IsWindow(hDestinationWindow) == FALSE)
+    return D3DERR_DEVICELOST;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateRenderTargetEx(
+    UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample,
+    DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9 **ppSurface,
+    HANDLE *pSharedHandle, DWORD Usage) {
+  if (Usage & D3DUSAGE_RESTRICTED_CONTENT)
+    return D3DERR_INVALIDCALL;
+  return CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality, Lockable,
+                            ppSurface, pSharedHandle);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateOffscreenPlainSurfaceEx(
+    UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface,
+    HANDLE *pSharedHandle, DWORD Usage) {
+  if (Usage & D3DUSAGE_RESTRICTED_CONTENT)
+    return D3DERR_INVALIDCALL;
+  return CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::CreateDepthStencilSurfaceEx(
+    UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample,
+    DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9 **ppSurface,
+    HANDLE *pSharedHandle, DWORD Usage) {
+  if (Usage & D3DUSAGE_RESTRICTED_CONTENT)
+    return D3DERR_INVALIDCALL;
+  return CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality,
+                                   Discard, ppSurface, pSharedHandle);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters,
+                                             D3DDISPLAYMODEEX *pFullscreenDisplayMode) {
+  if (pFullscreenDisplayMode) {
+    Logger::info(str::format("ResetEx: fullscreen mode ", pFullscreenDisplayMode->Width, "x",
+                             pFullscreenDisplayMode->Height, " ignored (windowed layer)"));
+  }
+  return Reset(pPresentationParameters);
+}
+
+HRESULT STDMETHODCALLTYPE D3D9Device::GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX *pMode,
+                                                      D3DDISPLAYROTATION *pRotation) {
+  if (iSwapChain != 0 || !pMode)
+    return D3DERR_INVALIDCALL;
+
+  D3DDISPLAYMODE mode = {};
+  HRESULT hr = GetDisplayMode(0, &mode);
+  if (FAILED(hr))
+    return hr;
+
+  pMode->Size = sizeof(D3DDISPLAYMODEEX);
+  pMode->Width = mode.Width;
+  pMode->Height = mode.Height;
+  pMode->RefreshRate = mode.RefreshRate;
+  pMode->Format = mode.Format;
+  pMode->ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+  if (pRotation)
+    *pRotation = D3DDISPLAYROTATION_IDENTITY;
   return S_OK;
 }
 

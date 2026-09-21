@@ -4,6 +4,8 @@
 #include "dxmt_texture.hpp"
 #include "d3d9_debug_trace.hpp"
 #include "d3d9_format.hpp"
+#include "d3d9_getdc.hpp"
+#include "d3d9_texture_ex.hpp"
 #include "log/log.hpp"
 #include <d3d9.h>
 #include <cstdlib>
@@ -20,7 +22,8 @@ extern uint64_t g_frame_tex_lock;
 class D3D9Device;
 class D3D9TextureSurface;
 
-class D3D9Texture2D final : public ComObjectClamp<IDirect3DTexture9> {
+class D3D9Texture2D final : public ComObjectClamp<IDirect3DTexture9>,
+                           public D3D9BaseTexture9 {
 public:
   D3D9Texture2D(D3D9Device *device, UINT width, UINT height, UINT levels,
                  D3DFORMAT format, Rc<Texture> texture, TextureViewKey viewKey)
@@ -389,6 +392,18 @@ public:
     }
   }
 
+  // D3D9BaseTexture9 - the interface the device binds any texture through, so
+  // 2D, cube and volume textures share one draw path.
+  Rc<Texture> &gpuTexture() final { return texture_; }
+  TextureViewKey defaultView() final { return viewKey_; }
+  D3DFORMAT d3dFormat() final { return format_; }
+  UINT baseWidth() final { return width_; }
+  UINT baseHeight() final { return height_; }
+  bool anyDirty() final { return isAnyDirty(); }
+  void uploadDirty(dxmt::CommandQueue &queue) final { uploadDirtyLevelsStaged(texture_, queue); }
+  size_t nonZeroBytes() final { return const_cast<D3D9Texture2D *>(this)->nonZeroBytes(); }
+  void debugStats(char *out, size_t size) final { const_cast<D3D9Texture2D *>(this)->debugStats(out, size); }
+
   // Legacy accessors for backward compat with single-level path
   bool isDirty() const { return isAnyDirty(); }
   void clearDirty() {
@@ -466,17 +481,15 @@ public:
     return parent_->UnlockRect(level_);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final {
-    if (DebugTraceBudget("MSE_TRACE_FILL") > 0) {
-      DebugTraceBudget("MSE_TRACE_FILL")--;
-      Logger::warn(str::format("D3D9DC: texture surface GetDC called tex=", (void *)parent_,
-                               " lv=", level_));
-    }
-    static bool warned = false;
-    if (!warned) { warned = true; Logger::warn("D3D9: texture surface GetDC is not implemented"); }
-    return D3DERR_INVALIDCALL;
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc) final {
+    D3DSURFACE_DESC desc = {};
+    if (FAILED(GetDesc(&desc)))
+      return D3DERR_INVALIDCALL;
+    // The parent texture keeps per-level staging, so a release writes straight
+    // into it and the next bind uploads the drawn pixels.
+    return gdi_dc_.acquire(phdc, this, desc.Width, desc.Height, desc.Format, false);
   }
-  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) final { return gdi_dc_.release(hdc); }
 
   // Internal accessors for render target usage
   Rc<Texture> &texture() { return parent_->texture(); }
@@ -487,6 +500,7 @@ public:
 private:
   D3D9Texture2D *parent_;
   UINT level_;
+  D3D9SurfaceDC gdi_dc_;
 };
 
 // Deferred implementation — needs D3D9TextureSurface to be complete

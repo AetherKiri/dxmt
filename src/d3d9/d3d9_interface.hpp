@@ -5,7 +5,7 @@
 
 namespace dxmt {
 
-class D3D9Interface final : public ComObjectWithInitialRef<IDirect3D9> {
+class D3D9Interface final : public ComObjectWithInitialRef<IDirect3D9Ex> {
 
 public:
   D3D9Interface();
@@ -44,6 +44,26 @@ public:
                                           DWORD BehaviorFlags,
                                           D3DPRESENT_PARAMETERS *pPresentationParameters,
                                           IDirect3DDevice9 **ppReturnedDeviceInterface) final;
+
+  // IDirect3D9Ex
+  UINT STDMETHODCALLTYPE GetAdapterModeCountEx(UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter) final;
+  HRESULT STDMETHODCALLTYPE EnumAdapterModesEx(UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter,
+                                                UINT Mode, D3DDISPLAYMODEEX *pMode) final;
+  HRESULT STDMETHODCALLTYPE GetAdapterDisplayModeEx(UINT Adapter, D3DDISPLAYMODEEX *pMode,
+                                                     D3DDISPLAYROTATION *pRotation) final;
+  HRESULT STDMETHODCALLTYPE CreateDeviceEx(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,
+                                            DWORD BehaviorFlags,
+                                            D3DPRESENT_PARAMETERS *pPresentationParameters,
+                                            D3DDISPLAYMODEEX *pFullscreenDisplayMode,
+                                            IDirect3DDevice9Ex **ppReturnedDeviceInterface) final;
+  HRESULT STDMETHODCALLTYPE GetAdapterLUID(UINT Adapter, LUID *pLUID) final;
 };
+
+/*
+ * Adapter identity reported through IDirect3D9Ex::GetAdapterLUID.  Anything
+ * stable and non-zero works; choosing a made-up value keeps us from claiming
+ * to be a specific physical GPU.
+ */
+#define DXMT_D3D9_ADAPTER_LUID { 0x4d5345u, 0x0001u }
 
 } // namespace dxmt

@@ -62,7 +62,7 @@ private:
   UINT stream_offsets[16] = {};
   UINT stream_strides[16] = {};
   Com<D3D9IndexBuffer> ib;
-  Com<D3D9Texture2D> textures[16] = {};
+  Com<IDirect3DBaseTexture9> textures[16] = {};
 };
 
 } // namespace dxmt
