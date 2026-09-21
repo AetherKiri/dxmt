@@ -68,6 +68,16 @@ static D3D9BaseTexture9 *BaseTextureOf(IDirect3DBaseTexture9 *texture) {
   }
 }
 
+// Temporary diagnosis aid: traces the entry of the calls the conformance
+// probe reports as failing, so a call that never reaches the driver is easy to
+// tell apart from one that does and rejects its arguments.
+static void ConfTrace(const char *name, const void *a = nullptr, long b = 0) {
+  if (getenv("MSE_D3D9_CONF_TRACE")) {
+    fprintf(stderr, "D3D9CONF %s a=%p b=%ld\n", name, a, b);
+    fflush(stderr);
+  }
+}
+
 static D3DMATRIX IdentityMatrix() {
   D3DMATRIX m = {};
   m._11 = m._22 = m._33 = m._44 = 1.0f;
@@ -1075,6 +1085,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateVolumeTexture(
     UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format,
     D3DPOOL Pool, IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle) {
+  ConfTrace("CreateVolumeTexture", ppVolumeTexture, (long)Format);
   if (!ppVolumeTexture || !Width || !Height || !Depth)
     return D3DERR_INVALIDCALL;
   *ppVolumeTexture = nullptr;
@@ -1125,6 +1136,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateVolumeTexture(
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateCubeTexture(
     UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
     IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle) {
+  ConfTrace("CreateCubeTexture", ppCubeTexture, (long)Format);
   if (!ppCubeTexture || !EdgeLength)
     return D3DERR_INVALIDCALL;
   *ppCubeTexture = nullptr;
@@ -1308,6 +1320,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateDepthStencilSurface(
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool,
     IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle) {
+  ConfTrace("CreateVertexBuffer", ppVertexBuffer, (long)Length);
   if (!ppVertexBuffer) return D3DERR_INVALIDCALL;
 
   auto buffer = Rc(new Buffer(Length, dxmt_device_->device()));
@@ -4138,6 +4151,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::UpdateSurface(
 // is reported once.
 HRESULT STDMETHODCALLTYPE D3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect,
                                                D3DCOLOR Color) {
+  ConfTrace("ColorFill", pSurface, (long)Color);
   FlushDrawBatch();
   if (!pSurface)
     return D3DERR_INVALIDCALL;
@@ -4213,6 +4227,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::ColorFill(IDirect3DSurface9 *pSurface, con
 // was last presented, so this is the render-target readback path.
 HRESULT STDMETHODCALLTYPE D3D9Device::GetFrontBufferData(UINT iSwapChain,
                                                         IDirect3DSurface9 *pDestSurface) {
+  ConfTrace("GetFrontBufferData", pDestSurface, (long)iSwapChain);
   if (iSwapChain != 0 || !pDestSurface)
     return D3DERR_INVALIDCALL;
   if (!implicit_swapchain_)
@@ -4961,6 +4976,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::PresentEx(const RECT *pSourceRect, const R
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::GetGPUThreadPriority(INT *pPriority) {
+  ConfTrace("GetGPUThreadPriority", pPriority);
   if (!pPriority)
     return D3DERR_INVALIDCALL;
   *pPriority = 0;
@@ -4975,6 +4991,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetGPUThreadPriority(INT Priority) {
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::WaitForVBlank(UINT iSwapChain) {
+  ConfTrace("WaitForVBlank", nullptr, (long)iSwapChain);
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;
   // Presentation is already throttled by the layer's vsync interval.
@@ -4983,6 +5000,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::WaitForVBlank(UINT iSwapChain) {
 
 HRESULT STDMETHODCALLTYPE D3D9Device::CheckResourceResidency(
     IDirect3DResource9 **ppResourceArray, UINT32 NumResources) {
+  ConfTrace("CheckResourceResidency", ppResourceArray, (long)NumResources);
   (void)ppResourceArray;
   (void)NumResources;
   // Everything the layer allocates is backed by a resident Metal resource.
