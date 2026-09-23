@@ -1,6 +1,8 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <dlfcn.h>
+#include <pthread.h>
+#include <time.h>
 #include <TargetConditionals.h>
 #if TARGET_OS_IOS
 #import <UIKit/UIKit.h>
@@ -2201,9 +2203,66 @@ void madeira_set_vsync_locked(int mode) {
 }
 int madeira_get_vsync_locked(void) { return g_madeira_vsync_mode; }
 
+/* Standalone Madeira-SE pacing.  The App Store runtime cannot depend on a
+ * host display refresh rate: a visual novel should make progress at a stable
+ * cadence on both 60 Hz and 120 Hz devices.  The launcher sets this to an
+ * integer FPS value (normally 30); zero or an absent value leaves the normal
+ * DXMT pacing untouched.  Keep the clock and mutex here, at the last point
+ * before a drawable is handed to Metal, so CPU-side rendering remains free
+ * to batch while presentation is bounded. */
+static pthread_mutex_t g_madeira_fps_cap_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_madeira_fps_cap = -1;
+static uint64_t g_madeira_fps_cap_next_ns;
+
+static uint64_t madeira_monotonic_ns(void)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static void madeira_wait_for_fps_cap(void)
+{
+  uint64_t interval_ns, now, target;
+
+  pthread_mutex_lock(&g_madeira_fps_cap_lock);
+  if (g_madeira_fps_cap < 0) {
+    const char *value = getenv("MADEIRA_SE_FPS_CAP");
+    char *end = NULL;
+    long cap = value ? strtol(value, &end, 10) : 0;
+    if (!value || end == value || *end != '\0' || cap < 1 || cap > 240)
+      g_madeira_fps_cap = 0;
+    else
+      g_madeira_fps_cap = (int)cap;
+    if (g_madeira_fps_cap > 0)
+      dprintf(STDERR_FILENO, "[iOS DXMT] FPS cap=%d\n", g_madeira_fps_cap);
+  }
+  if (g_madeira_fps_cap <= 0) {
+    pthread_mutex_unlock(&g_madeira_fps_cap_lock);
+    return;
+  }
+
+  interval_ns = 1000000000ull / (uint64_t)g_madeira_fps_cap;
+  now = madeira_monotonic_ns();
+  if (!g_madeira_fps_cap_next_ns)
+    g_madeira_fps_cap_next_ns = now;
+  target = g_madeira_fps_cap_next_ns + interval_ns;
+  if (target > now) {
+    struct timespec delay;
+    uint64_t remaining = target - now;
+    delay.tv_sec = (time_t)(remaining / 1000000000ull);
+    delay.tv_nsec = (long)(remaining % 1000000000ull);
+    nanosleep(&delay, NULL);
+    now = madeira_monotonic_ns();
+  }
+  g_madeira_fps_cap_next_ns = now > target ? now : target;
+  pthread_mutex_unlock(&g_madeira_fps_cap_lock);
+}
+
 static NTSTATUS
 _MTLCommandBuffer_presentDrawable(void *obj) {
   struct unixcall_generic_obj_obj_noret *params = obj;
+  madeira_wait_for_fps_cap();
   if (wmtr_enabled()) {
     /* Presenting hands the drawable back to the host layer; without this the
      * pool leaks one a frame and acquisition eventually blocks forever. */

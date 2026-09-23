@@ -89,9 +89,11 @@ public:
         flags.set(BufferAllocationFlag::GpuManaged);
     } else {
       flags.set(BufferAllocationFlag::SuballocateFromOnePage);
-#ifdef __i386__
+      /* Dynamic buffers are exposed through ID3D11DeviceContext::Map.  Keep
+       * their CPU storage in Wine's guest virtual address space on both PE
+       * architectures; a native CRT allocation is not addressable by TCTI
+       * when an x86-64 guest writes the mapped pointer. */
       flags.set(BufferAllocationFlag::CpuPlaced);
-#endif
     }
     auto allocation = buffer_->allocate(flags, "d3d11_buffer:CreateBuffer");
     auto &initializer = device->GetDXMTDevice().queue().initializer;

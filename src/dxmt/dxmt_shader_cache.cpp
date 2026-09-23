@@ -48,9 +48,15 @@ void ShaderCache::recordShader(uint64_t start_ns) {
   s_total_shaders.fetch_add(1, std::memory_order_relaxed);
   s_burst_count.fetch_add(1, std::memory_order_relaxed);
   s_burst_duration_ns.fetch_add(duration, std::memory_order_relaxed);
-  std::call_once(s_monitor_flag, []() {
-    std::thread(shader_stats_monitor).detach();
-  });
+  /* The monitor is diagnostic only.  A detached, never-ending native thread
+   * is a poor fit for Madeira's in-process Wine model: the PE guest can exit
+   * while this thread keeps the host loader alive (and can make the launcher
+   * look like a hung game).  Opt in when shader timing is explicitly needed. */
+  if (env::getEnvVar("DXMT_SHADER_STATS") == "1") {
+    std::call_once(s_monitor_flag, []() {
+      std::thread(shader_stats_monitor).detach();
+    });
+  }
 }
 
 ShaderCache &

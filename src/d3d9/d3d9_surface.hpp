@@ -15,9 +15,14 @@ class D3D9Device;
 
 class D3D9Surface final : public ComObjectClamp<IDirect3DSurface9> {
 public:
-  // GPU-backed surface (render target / backbuffer)
+  // GPU-backed surface (render target, backbuffer, default-pool offscreen
+  // plain surface).  The D3D format is only known to the caller, so it has to
+  // be passed explicitly: GetDesc has to report what was requested, not the
+  // Metal format the surface happens to share with other D3D formats.
   D3D9Surface(D3D9Device *device, Rc<Texture> texture, TextureViewKey viewKey,
-              WMTPixelFormat mtlFormat = WMTPixelFormatInvalid);
+              WMTPixelFormat mtlFormat = WMTPixelFormatInvalid,
+              D3DFORMAT d3dFormat = D3DFMT_X8R8G8B8,
+              DWORD usage = D3DUSAGE_RENDERTARGET);
 
   // System memory surface (for readback)
   D3D9Surface(D3D9Device *device, UINT width, UINT height, D3DFORMAT format, D3DPOOL pool);
@@ -64,6 +69,7 @@ private:
   Rc<Texture> texture_;
   TextureViewKey viewKey_ = 0;
   WMTPixelFormat mtl_format_ = WMTPixelFormatInvalid;
+  DWORD usage_ = D3DUSAGE_RENDERTARGET;
 
   // System memory surface
   D3DPOOL pool_ = D3DPOOL_DEFAULT;

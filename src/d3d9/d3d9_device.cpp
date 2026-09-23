@@ -1159,7 +1159,11 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateCubeTexture(
   info.width = EdgeLength;
   info.height = EdgeLength;
   info.depth = 1;
-  info.array_length = 6; // the six faces of a Metal cube texture
+  /* array_length counts cubes, not faces: Metal rejects an arrayLength other
+   * than 1 for MTLTextureTypeCube and addresses the six faces as slices 0..5
+   * of that single element.  A face view therefore selects a slice, while the
+   * cube view spans six slices. */
+  info.array_length = 1;
   info.type = WMTTextureTypeCube;
   info.mipmap_level_count = mipLevels;
   info.sample_count = 1;

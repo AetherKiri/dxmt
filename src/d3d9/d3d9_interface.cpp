@@ -5,7 +5,21 @@
 #include "log/log.hpp"
 #include "wsi_monitor.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 namespace dxmt {
+
+/* Narrow capability-probe tracing for titles that stop before CreateDevice.
+ * It is enabled only by the existing MSE_D3D9_CONF_TRACE diagnostic switch. */
+static void ConfTraceInterface(const char *name, unsigned long a = 0,
+                               unsigned long b = 0) {
+  if (std::getenv("MSE_D3D9_CONF_TRACE")) {
+    std::printf("D3D9CONF %s a=%lu b=%lu\n", name, a, b);
+    std::fflush(stdout);
+  }
+}
 
 D3D9Interface::D3D9Interface() {
   Logger::info("D3D9Interface created");
@@ -31,11 +45,13 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::RegisterSoftwareDevice(void *) {
 }
 
 UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterCount() {
+  ConfTraceInterface("GetAdapterCount");
   return 1;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterIdentifier(
     UINT Adapter, DWORD Flags, D3DADAPTER_IDENTIFIER9 *pIdentifier) {
+  ConfTraceInterface("GetAdapterIdentifier", Adapter, Flags);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
   if (!pIdentifier)
@@ -74,6 +90,33 @@ static uint32_t getFormatBpp(D3DFORMAT Format) {
   }
 }
 
+/* The standalone launcher owns the virtual desktop size.  Wine's display
+ * enumeration can still expose only the host's cached modes, which makes a
+ * title reject the adapter before it ever calls CreateDevice (common for
+ * engines that require their configured 1280x720 mode).  Add the requested
+ * compatibility mode to D3D9's list when it is absent from the host list. */
+static bool getVirtualMode(wsi::WsiMode *pMode) {
+  const char *value = std::getenv("MADEIRA_SE_D3D9_VIRTUAL_MODE");
+  if (!value || !value[0] || !std::strcmp(value, "1"))
+    value = std::getenv("MADEIRA_SE_WINDOW_SIZE");
+  if (!value || !value[0] || !pMode)
+    return false;
+
+  unsigned int width = 0, height = 0;
+  char tail = 0;
+  if (std::sscanf(value, "%ux%u%c", &width, &height, &tail) != 2 ||
+      width < 320 || width > 7680 || height < 200 || height > 4320)
+    return false;
+
+  pMode->width = width;
+  pMode->height = height;
+  pMode->refreshRate.numerator = 60;
+  pMode->refreshRate.denominator = 1;
+  pMode->bitsPerPixel = 32;
+  pMode->interlaced = false;
+  return true;
+}
+
 static UINT enumerateMatchingModes(D3DFORMAT Format, UINT targetIndex, D3DDISPLAYMODE *pOut) {
   uint32_t bpp = getFormatBpp(Format);
   if (bpp == 0)
@@ -81,11 +124,17 @@ static UINT enumerateMatchingModes(D3DFORMAT Format, UINT targetIndex, D3DDISPLA
 
   HMONITOR monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
   wsi::WsiMode wsiMode;
+  wsi::WsiMode virtualMode;
+  bool haveVirtualMode = getVirtualMode(&virtualMode) && virtualMode.bitsPerPixel == bpp;
   UINT matchCount = 0;
 
   for (uint32_t i = 0; wsi::getDisplayMode(monitor, i, &wsiMode); i++) {
     if (wsiMode.bitsPerPixel != bpp)
       continue;
+
+    if (haveVirtualMode && wsiMode.width == virtualMode.width &&
+        wsiMode.height == virtualMode.height)
+      haveVirtualMode = false;
 
     if (pOut && matchCount == targetIndex) {
       pOut->Width = wsiMode.width;
@@ -100,17 +149,32 @@ static UINT enumerateMatchingModes(D3DFORMAT Format, UINT targetIndex, D3DDISPLA
     matchCount++;
   }
 
+  if (haveVirtualMode) {
+    if (pOut && matchCount == targetIndex) {
+      pOut->Width = virtualMode.width;
+      pOut->Height = virtualMode.height;
+      pOut->RefreshRate = 60;
+      pOut->Format = Format;
+      return matchCount + 1;
+    }
+    matchCount++;
+  }
+
   return matchCount;
 }
 
 UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterModeCount(UINT Adapter, D3DFORMAT Format) {
+  ConfTraceInterface("GetAdapterModeCount", Adapter, Format);
   if (Adapter != 0)
     return 0;
-  return enumerateMatchingModes(Format, UINT_MAX, nullptr);
+  UINT result = enumerateMatchingModes(Format, UINT_MAX, nullptr);
+  ConfTraceInterface("GetAdapterModeCount.result", result, Format);
+  return result;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModes(
     UINT Adapter, D3DFORMAT Format, UINT Mode, D3DDISPLAYMODE *pMode) {
+  ConfTraceInterface("EnumAdapterModes", Mode, Format);
   if (Adapter != 0 || !pMode)
     return D3DERR_INVALIDCALL;
 
@@ -122,12 +186,17 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModes(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayMode(UINT Adapter, D3DDISPLAYMODE *pMode) {
+  ConfTraceInterface("GetAdapterDisplayMode", Adapter);
   if (Adapter != 0 || !pMode)
     return D3DERR_INVALIDCALL;
 
   HMONITOR monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
   wsi::WsiMode mode;
-  if (wsi::getCurrentDisplayMode(monitor, &mode)) {
+  if (getVirtualMode(&mode)) {
+    pMode->Width = mode.width;
+    pMode->Height = mode.height;
+    pMode->RefreshRate = 60;
+  } else if (wsi::getCurrentDisplayMode(monitor, &mode)) {
     pMode->Width = mode.width;
     pMode->Height = mode.height;
     pMode->RefreshRate = (mode.refreshRate.denominator != 0)
@@ -144,6 +213,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayMode(UINT Adapter, D3D
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceType(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL) {
+  ConfTraceInterface("CheckDeviceType", Adapter);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
   return S_OK;
@@ -151,6 +221,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceType(
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormat(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, DWORD Usage, D3DRESOURCETYPE RType, D3DFORMAT CheckFormat) {
+  ConfTraceInterface("CheckDeviceFormat", Usage, CheckFormat);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
 
@@ -186,6 +257,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormat(
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceMultiSampleType(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE MultiSampleType,
     DWORD *pQualityLevels) {
+  ConfTraceInterface("CheckDeviceMultiSampleType", Adapter, MultiSampleType);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
   if (pQualityLevels)
@@ -197,6 +269,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceMultiSampleType(
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDepthStencilMatch(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, D3DFORMAT) {
+  ConfTraceInterface("CheckDepthStencilMatch", Adapter);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
   return S_OK;
@@ -204,6 +277,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDepthStencilMatch(
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormatConversion(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT) {
+  ConfTraceInterface("CheckDeviceFormatConversion", Adapter);
   if (Adapter != 0)
     return D3DERR_INVALIDCALL;
   return S_OK;
@@ -211,6 +285,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormatConversion(
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetDeviceCaps(
     UINT Adapter, D3DDEVTYPE DeviceType, D3DCAPS9 *pCaps) {
+  ConfTraceInterface("GetDeviceCaps", Adapter, DeviceType);
   if (Adapter != 0 || !pCaps)
     return D3DERR_INVALIDCALL;
 
@@ -340,6 +415,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::GetDeviceCaps(
 }
 
 HMONITOR STDMETHODCALLTYPE D3D9Interface::GetAdapterMonitor(UINT Adapter) {
+  ConfTraceInterface("GetAdapterMonitor", Adapter);
   return MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
 }
 
@@ -347,6 +423,8 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDevice(
     UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,
     DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters,
     IDirect3DDevice9 **ppReturnedDeviceInterface) {
+  ConfTraceInterface("CreateDevice", BehaviorFlags,
+                     pPresentationParameters ? pPresentationParameters->BackBufferFormat : 0);
   if (Adapter != 0 || !pPresentationParameters || !ppReturnedDeviceInterface)
     return D3DERR_INVALIDCALL;
 
@@ -365,6 +443,8 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDevice(
 
 UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterModeCountEx(
     UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter) {
+  ConfTraceInterface("GetAdapterModeCountEx", Adapter,
+                     pFilter ? pFilter->Format : 0);
   if (Adapter != 0 || !pFilter)
     return 0;
   return GetAdapterModeCount(Adapter, pFilter->Format);
@@ -373,6 +453,8 @@ UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterModeCountEx(
 HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModesEx(
     UINT Adapter, const D3DDISPLAYMODEFILTER *pFilter, UINT Mode,
     D3DDISPLAYMODEEX *pMode) {
+  ConfTraceInterface("EnumAdapterModesEx", Mode,
+                     pFilter ? pFilter->Format : 0);
   if (Adapter != 0 || !pFilter || !pMode)
     return D3DERR_INVALIDCALL;
 
@@ -392,6 +474,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModesEx(
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayModeEx(
     UINT Adapter, D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) {
+  ConfTraceInterface("GetAdapterDisplayModeEx", Adapter);
   if (Adapter != 0 || !pMode)
     return D3DERR_INVALIDCALL;
 
@@ -416,6 +499,8 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDeviceEx(
     D3DPRESENT_PARAMETERS *pPresentationParameters,
     D3DDISPLAYMODEEX *pFullscreenDisplayMode,
     IDirect3DDevice9Ex **ppReturnedDeviceInterface) {
+  ConfTraceInterface("CreateDeviceEx", BehaviorFlags,
+                     pPresentationParameters ? pPresentationParameters->BackBufferFormat : 0);
   if (!ppReturnedDeviceInterface)
     return D3DERR_INVALIDCALL;
   *ppReturnedDeviceInterface = nullptr;
@@ -448,6 +533,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDeviceEx(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterLUID(UINT Adapter, LUID *pLUID) {
+  ConfTraceInterface("GetAdapterLUID", Adapter);
   if (Adapter != 0 || !pLUID)
     return D3DERR_INVALIDCALL;
 

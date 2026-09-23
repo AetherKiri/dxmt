@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include "thread.hpp"
 #include "util_win32_compat.h"
 #include <atomic>
@@ -48,15 +50,25 @@ private:
 template <typename Task> task_scheduler<Task>::task_scheduler() {
   max_threads = dxmt::thread::hardware_concurrency() * 2;
   workers_.reserve(max_threads);
-  threads = 2;
-
-  for (unsigned i = 0; i < threads; i++) {
-    workers_.emplace_back([this]() { worker_func(); });
-  }
+  /* Do not start native workers until the first shader/pipeline task is
+   * submitted.  A D3D11 device can be created and released without ever
+   * compiling a pipeline; eagerly creating two workers made that short path
+   * unnecessarily sensitive to PE thread teardown. */
+  threads = 0;
 }
 
 template <typename Task> task_scheduler<Task>::~task_scheduler() {
-  destroyed.store(true);
+  /*
+   * submit() may be called by a guest thread while the owning D3D device is
+   * being released.  Protect the transition to destroyed with the same
+   * mutex that guards task_queue_ and workers_: otherwise submit() can grow
+   * workers_ while this destructor is iterating it, leaving a stale
+   * dxmt::thread pointer in the join loop.
+   */
+  {
+    std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+    destroyed.store(true);
+  }
   worker_cond_.notify_all();
 
   for (auto &worker : workers_) {
@@ -133,7 +145,17 @@ template <typename Task>
 void
 task_scheduler<Task>::submit(Task task) {
   std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+  if (destroyed.load())
+    return;
   task_queue_.push(task);
+
+  if (threads == 0) {
+    threads = std::min<uint64_t>(2, max_threads);
+    if (threads == 0)
+      threads = 1;
+    for (uint64_t i = 0; i < threads; i++)
+      workers_.emplace_back([this]() { worker_func(); });
+  }
 
   if (running.load(std::memory_order_relaxed) == threads && threads < max_threads) {
     workers_.emplace_back([this]() { worker_func(); });

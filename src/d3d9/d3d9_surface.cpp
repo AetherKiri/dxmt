@@ -6,10 +6,10 @@
 namespace dxmt {
 
 D3D9Surface::D3D9Surface(D3D9Device *device, Rc<Texture> texture, TextureViewKey viewKey,
-                         WMTPixelFormat mtlFormat)
+                         WMTPixelFormat mtlFormat, D3DFORMAT d3dFormat, DWORD usage)
     : device_(device), texture_(std::move(texture)), viewKey_(viewKey),
       mtl_format_(mtlFormat != WMTPixelFormatInvalid ? mtlFormat : this->texture_->pixelFormat()),
-      pool_(D3DPOOL_DEFAULT), format_(D3DFMT_X8R8G8B8) {}
+      usage_(usage), pool_(D3DPOOL_DEFAULT), format_(d3dFormat) {}
 
 D3D9Surface::D3D9Surface(D3D9Device *device, UINT width, UINT height, D3DFORMAT format, D3DPOOL pool)
     : device_(device), pool_(pool), format_(format), width_(width), height_(height) {
@@ -54,25 +54,14 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
   if (!pDesc)
     return D3DERR_INVALIDCALL;
 
-  if (pool_ == D3DPOOL_SYSTEMMEM) {
-    pDesc->Format = format_;
-    pDesc->Type = D3DRTYPE_SURFACE;
-    pDesc->Usage = 0;
-    pDesc->Pool = D3DPOOL_SYSTEMMEM;
-    pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
-    pDesc->MultiSampleQuality = 0;
-    pDesc->Width = width_;
-    pDesc->Height = height_;
-  } else {
-    pDesc->Format = D3DFMT_X8R8G8B8;
-    pDesc->Type = D3DRTYPE_SURFACE;
-    pDesc->Usage = D3DUSAGE_RENDERTARGET;
-    pDesc->Pool = D3DPOOL_DEFAULT;
-    pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
-    pDesc->MultiSampleQuality = 0;
-    pDesc->Width = texture_->width();
-    pDesc->Height = texture_->height();
-  }
+  pDesc->Format = format_;
+  pDesc->Type = D3DRTYPE_SURFACE;
+  pDesc->Usage = texture_ ? usage_ : 0;
+  pDesc->Pool = pool_;
+  pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
+  pDesc->MultiSampleQuality = 0;
+  pDesc->Width = texture_ ? texture_->width() : width_;
+  pDesc->Height = texture_ ? texture_->height() : height_;
   return S_OK;
 }
 

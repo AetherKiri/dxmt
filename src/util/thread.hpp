@@ -70,8 +70,17 @@ public:
   }
 
   void join() {
-    if (::WaitForSingleObjectEx(m_handle, INFINITE, FALSE) == WAIT_FAILED)
-      throw MTLD3DError("Failed to join thread");
+    if (::WaitForSingleObjectEx(m_handle, INFINITE, FALSE) == WAIT_FAILED) {
+      /* Wine can tear down a thread handle while the wineserver is being
+       * stopped during PE process exit.  At this point the owner is already
+       * destructing its GPU queue; throwing from the destructor turns a clean
+       * D3D11 smoke exit into an uncaught exception.  Close the invalidated
+       * handle and let process teardown reclaim the native worker.  Real
+       * runtime failures still surface while the queue is alive. */
+      ::CloseHandle(m_handle);
+      m_handle = nullptr;
+      return;
+    }
     this->detach();
   }
 
