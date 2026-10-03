@@ -177,7 +177,7 @@ endif
 
 # MADEIRA (WOW64_DESIGN.md section 8): every change to an imported DXMT file
 # is gated on this, so a diff against the v0.4-d3d9 tag stays readable and
-# every gate is listed in research/dxmt/LICENSE-MADEIRA.md (section 8.9 risk 2).
+# every gate is listed in dxmt/LICENSE-MADEIRA.md (section 8.9 risk 2).
 if dxmt_madeira
 add_project_arguments('-DDXMT_MADEIRA=1', language: 'cpp')
 add_project_arguments('-DDXMT_MADEIRA=1', language: 'c')

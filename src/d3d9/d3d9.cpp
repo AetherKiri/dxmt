@@ -9,7 +9,7 @@
  * shape -- the ten DLL exports, the PIX counters and the whole validator
  * state machine run on the guest's own thread -- so these bodies survive here
  * only to keep the native library self-contained and linkable until step 3
- * moves them.  See research/dxmt/LICENSE-MADEIRA.md. */
+ * moves them.  See dxmt/LICENSE-MADEIRA.md. */
 #ifdef DXMT_MADEIRA
 #include "util_madeira_compat.h"
 #endif

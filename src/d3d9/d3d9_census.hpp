@@ -2,7 +2,7 @@
  * MADEIRA (WOW64_DESIGN.md section 8.4, measurement 1): [d3d9-census].
  *
  * This file is Madeira's own work, distributed under GPL-3.0-or-later.
- * See research/dxmt/LICENSE-MADEIRA.md.
+ * See dxmt/LICENSE-MADEIRA.md.
  *
  * Section 8 has to know how many D3D9 vtable calls a real workload makes per
  * frame, and which ones, before it can decide whether a synchronous 32-bit

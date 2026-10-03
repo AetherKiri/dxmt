@@ -2,7 +2,7 @@
  * d3d9_guest_alloc.hpp -- the app-visible half of the allocator split.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(c)).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * Every pointer D3D9 hands back through Lock / LockRect / LockBox, and every
  * CPU mirror the application can reach, must live inside the guest window

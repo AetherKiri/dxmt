@@ -12,7 +12,7 @@
  * by growing and retrying; there is no upcall machinery anywhere.
  *
  * Alignment is 16384, the real iOS page size: DXMT_PAGE_SIZE is 4096
- * unconditionally (research/dxmt/meson.build:155), which is wrong here.
+ * unconditionally (dxmt/meson.build:155), which is wrong here.
  *
  * Copyright 2026 125hz
  *

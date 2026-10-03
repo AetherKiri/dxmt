@@ -15,11 +15,11 @@
  * window did through the window-state slot.
  *
  * PROVENANCE: the fullscreen restyle, the focus window proc and the cursor
- * realisation are moved from research/dxmt/src/d3d9/d3d9_device.cpp (imported
+ * realisation are moved from dxmt/src/d3d9/d3d9_device.cpp (imported
  * from dacevedo12/dxmt v0.4-d3d9; LGPL-2.1-or-later, COPYING.LIB) and
  * reshaped from C++ members into C functions over struct
  * d3d9shim_device_extra.  The moved blocks keep that licence; the rest of
- * this file is GPL-3.0-or-later.  See research/dxmt/LICENSE-MADEIRA.md.
+ * this file is GPL-3.0-or-later.  See dxmt/LICENSE-MADEIRA.md.
  *
  * Moved blocks: written by David Acevedo for the Direct3D 9 frontend of
  * https://github.com/dacevedo12/dxmt (tag v0.4-d3d9, commit e8dd4c65), a DXMT

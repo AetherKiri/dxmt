@@ -2,7 +2,7 @@
  * d3d9_unix_glue.h -- the hand-written half of the generated unix entries.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.5).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * d3d9_unix.c is generated and states its requirements in its own prologue:
  * an NTSTATUS vocabulary, the four pointer macros, the pSharedHandle rule and

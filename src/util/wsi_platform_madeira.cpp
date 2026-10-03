@@ -3,7 +3,7 @@
  * Madeira build.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(c)).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * This is the HOST allocator: everything DXMT allocates that the application
  * never dereferences (argument buffers, encoder scratch, occlusion-query

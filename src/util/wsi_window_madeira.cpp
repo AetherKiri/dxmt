@@ -2,7 +2,7 @@
  * wsi_window_madeira.cpp -- wsi window services for the native Madeira build.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(d)).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * wsi_window_headless.cpp is the shape this follows -- every fullscreen entry
  * point returns true so a game's mode negotiation does not abort -- but it

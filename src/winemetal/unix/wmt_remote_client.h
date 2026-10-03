@@ -31,7 +31,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include "../../../../remote-metal/protocol.h"
+#include "../../../../research/remote-metal/protocol.h"
 
 static int  wmtr_fd   = -1;
 static int  wmtr_mode = -1;          /* -1 undecided, 0 local, 1 remote */

@@ -46,7 +46,7 @@ static HMONITOR const kSyntheticMonitor = reinterpret_cast<HMONITOR>(1);
  * Win32 boundary, so the native build answers from the same per-HWND cache
  * the shim fills.  A NULL window asks for its default entry, which is the
  * virtual desktop size -- exactly what GetSystemMetrics(SM_CXSCREEN) meant
- * here.  See research/dxmt/LICENSE-MADEIRA.md. */
+ * here.  See dxmt/LICENSE-MADEIRA.md. */
 #ifdef DXMT_MADEIRA
 static void getScreenSize(uint32_t *w, uint32_t *h) {
   dxmt::wsi::getWindowSize(nullptr, w, h);

@@ -2,7 +2,7 @@
  * util_madeira_compat.h -- Win32 compatibility for the NATIVE Madeira build.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(d)).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * In the `dxmt_madeira_native` mode the D3D9 frontend and its DXMT substrate
  * are compiled as iOS-arm64 unix code that lives *below* the Win32 boundary:

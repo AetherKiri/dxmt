@@ -2,7 +2,7 @@
  * d3d9_native_glue.cpp -- the native side of the D3D9 shim boundary.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.5).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * What lives here:
  *

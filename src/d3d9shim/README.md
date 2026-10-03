@@ -88,8 +88,8 @@ vtable slot cannot silently renumber the transport ABI.
 ## Regenerating
 
 ```sh
-python3 research/dxmt/src/d3d9shim/gen_d3d9_thunks.py            # write
-python3 research/dxmt/src/d3d9shim/gen_d3d9_thunks.py --check    # CI: stale?
+python3 dxmt/src/d3d9shim/gen_d3d9_thunks.py            # write
+python3 dxmt/src/d3d9shim/gen_d3d9_thunks.py --check    # CI: stale?
 ```
 
 Every generated file carries a "REGENERATE, DO NOT EDIT" banner. Output is
@@ -412,8 +412,8 @@ hand-written `d3d9_unix_glue.h`):
 
 ```
 gcc -fsyntax-only -std=c11 -Wall -Wextra \
-    -I research/dxmt/include/native/windows \
-    -I research/dxmt/include/native/directx \
+    -I dxmt/include/native/windows \
+    -I dxmt/include/native/directx \
     -I src/d3d9shim -I src/d3d9/unix src/d3d9/unix/d3d9_unix.c
 ```
 

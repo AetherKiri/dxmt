@@ -3,7 +3,7 @@
  * counters and report.
  *
  * This file is Madeira's own work, distributed under GPL-3.0-or-later.
- * See research/dxmt/LICENSE-MADEIRA.md.
+ * See dxmt/LICENSE-MADEIRA.md.
  *
  * Modelled on src/winemetal/wmt_api_census.c, with the two differences the
  * question forces:

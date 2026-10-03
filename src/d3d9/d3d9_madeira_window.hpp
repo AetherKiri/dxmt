@@ -2,7 +2,7 @@
  * d3d9_madeira_window.hpp -- the window seam for the native Madeira build.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(d), section 8.5).  New file,
- * GPL-3.0-or-later; see research/dxmt/LICENSE-MADEIRA.md.
+ * GPL-3.0-or-later; see dxmt/LICENSE-MADEIRA.md.
  *
  * "All user32/gdi32 stays in the shim": the fullscreen restyle, the focus
  * window subclass and the activation reposition all deliver messages to the

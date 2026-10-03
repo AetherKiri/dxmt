@@ -22,8 +22,8 @@
 """The D3D9 interface description (WOW64_DESIGN.md sections 8.5 / 8.6 / 8.7).
 
 15 interfaces, 320 vtable slots.  THE SLOT ORDER IS THE ABI: it is taken from
-the SDK header `research/dxmt/include/native/directx/d3d9.h`, which is also
-what `research/dxmt/src/d3d9/*.hpp` declares `override` against, so the two
+the SDK header `dxmt/include/native/directx/d3d9.h`, which is also
+what `dxmt/src/d3d9/*.hpp` declares `override` against, so the two
 cannot drift without a C++ compile error.  A slot inserted or dropped here
 silently sends every later call to the wrong function, exactly as
 `src/winemetal/gen_remote_guard.py` warns about the unix-call table.
@@ -481,7 +481,7 @@ EXPECTED_SLOT_COUNTS = {
 EXPECTED_TOTAL_SLOTS = 320
 
 # The DLL exports the shim must provide, name and ORDINAL, copied from
-# research/dxmt/src/d3d9/d3d9.def -- an app that imports d3d9 by ordinal gets
+# dxmt/src/d3d9/d3d9.def -- an app that imports d3d9 by ordinal gets
 # the wrong function otherwise.  WOW64_DESIGN.md 8.1 says "10 DLL exports";
 # the .def has TWELVE (DebugSetLevel and DebugSetMute were not counted).
 # None of them reaches the unix side by itself: 8.2(b) keeps D3DPERF_*,

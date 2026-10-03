@@ -4,7 +4,7 @@
 # [d3d9-census] per-method counters for the Direct3D 9 frontend.
 #
 # This file is part of Madeira's DXMT fork and is distributed under
-# GPL-3.0-or-later; see research/dxmt/LICENSE-MADEIRA.md.
+# GPL-3.0-or-later; see dxmt/LICENSE-MADEIRA.md.
 #
 # Section 8 asks "which of the 320 vtable slots actually get called, and how
 # many times per frame", because that number multiplied by the cost of one
@@ -24,7 +24,7 @@
 # winemetal dispatch table has: a hand-maintained second list would silently
 # attribute calls to the wrong method.
 #
-# Line endings are preserved verbatim (this checkout keeps research/dxmt CRLF
+# Line endings are preserved verbatim (this checkout keeps dxmt CRLF
 # in the working tree while git stores LF -- see WOW64_DESIGN.md section 7.11).
 
 import os

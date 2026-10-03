@@ -1,6 +1,6 @@
 ; The i386 D3D9 shim's exports (WOW64_DESIGN.md 8.5).
 ;
-; Same names AND same ordinals as research/dxmt/src/d3d9/d3d9.def: an
+; Same names AND same ordinals as dxmt/src/d3d9/d3d9.def: an
 ; application that imports d3d9 by ordinal gets the wrong function otherwise.
 ; d3d9_api.py's DLL_EXPORTS table carries the same pairs and the generator
 ; checks them, so the two halves cannot drift apart silently.

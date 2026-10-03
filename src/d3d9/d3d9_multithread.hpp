@@ -24,7 +24,7 @@
  * kernel32 under this file -- GetCurrentThreadId, SwitchToThread and
  * YieldProcessor come from util_madeira_compat.h, which implements the first
  * two for real (a stub returning 0 would make the spinlock below believe
- * every thread is the owner).  See research/dxmt/LICENSE-MADEIRA.md. */
+ * every thread is the owner).  See dxmt/LICENSE-MADEIRA.md. */
 #ifdef DXMT_MADEIRA
 #include "util_madeira_compat.h"
 #include <unistd.h>

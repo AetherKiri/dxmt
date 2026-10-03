@@ -2,7 +2,7 @@
  * wsi_window_madeira.hpp -- the per-HWND client-size cache the shim fills.
  *
  * MADEIRA (WOW64_DESIGN.md section 8.2(d)).  New file, GPL-3.0-or-later; see
- * research/dxmt/LICENSE-MADEIRA.md.
+ * dxmt/LICENSE-MADEIRA.md.
  *
  * The native frontend has no user32: an HWND down here is an opaque guest
  * token, and ::GetClientRect does not exist.  The shim runs on the guest's

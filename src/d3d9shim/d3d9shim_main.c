@@ -9,12 +9,12 @@
  * validator's whole state machine (8.2(b)).
  *
  * PROVENANCE: the D3DPERF_* bodies and the Direct3DShaderValidatorCreate9
- * state machine are moved VERBATIM from research/dxmt/src/d3d9/d3d9.cpp (the
+ * state machine are moved VERBATIM from dxmt/src/d3d9/d3d9.cpp (the
  * blocks the design calls `d3d9.cpp:44-67` and `d3d9.cpp:85-316`), which was
  * imported from dacevedo12/dxmt v0.4-d3d9 under LGPL-2.1-or-later
  * (COPYING.LIB), and rewritten from C++ into C without changing any
  * observable behaviour.  The moved blocks keep that licence; the rest of this
- * file is GPL-3.0-or-later.  See research/dxmt/LICENSE-MADEIRA.md.
+ * file is GPL-3.0-or-later.  See dxmt/LICENSE-MADEIRA.md.
  *
  * Moved blocks: written by David Acevedo for the Direct3D 9 frontend of
  * https://github.com/dacevedo12/dxmt (tag v0.4-d3d9, commit e8dd4c65), a DXMT
