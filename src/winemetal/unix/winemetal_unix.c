@@ -325,21 +325,26 @@ _MTLCopyAllDevices(void *obj) {
  * 7644 MB of RAM measured 8192 MB, so nothing here ever saw a shortage and God
  * of War sat at an 8175 MB footprint with 4.4 GB compressed, drawing black
  * frames. Budgets therefore plan with min(limit, hw.memsize - what iOS keeps
- * for itself). madeira.cfg ram-reserve-mb = that reserve (default 2048; 0 =
+ * for itself). madeira.cfg ram-reserve-mb = that reserve (default 1536; 0 =
  * plan with the limit alone). On a 12 GB phone the cap is above the limit and
- * nothing changes. */
+ * nothing changes; nor on a 6 GB iPhone 13 Pro (5666 MB of RAM, a 4096 MB
+ * limit: 5666 - 1536 = 4130). */
 static uint64_t madeira_ram_cap(void) {
   static uint64_t cap = 1;   /* 1 = not computed yet */
-  if (cap == 1) {
+  uint64_t c = __atomic_load_n(&cap, __ATOMIC_ACQUIRE);
+  if (c == 1) {
+    /* Computed into a local and published once: a concurrent caller never
+     * sees a half-made 0 ("no cap"). Two first callers may both compute it. */
     uint64_t mem = 0; size_t len = sizeof mem;
-    long long reserve = madeira_cfg_int("ram-reserve-mb", 2048); /* RAM left to iOS, MB; 0 = limit only */
-    cap = 0;
+    long long reserve = madeira_cfg_int("ram-reserve-mb", 1536); /* RAM left to iOS, MB; 0 = limit only */
+    c = 0;
     if (reserve > 0 && !sysctlbyname("hw.memsize", &mem, &len, NULL, 0) && mem > ((uint64_t)reserve << 20))
-      cap = mem - ((uint64_t)reserve << 20);
+      c = mem - ((uint64_t)reserve << 20);
     fprintf(stderr, "[wmt] RAM %llu MB, iOS reserve %lld MB -> memory cap %llu MB (madeira.cfg ram-reserve-mb; 0 = off)\n",
-            (unsigned long long)(mem >> 20), reserve, (unsigned long long)(cap >> 20));
+            (unsigned long long)(mem >> 20), reserve, (unsigned long long)(c >> 20));
+    __atomic_store_n(&cap, c, __ATOMIC_RELEASE);
   }
-  return cap;
+  return c;
 }
 /* os_proc_available_memory(), lowered so that footprint + the result stays
  * within the cap. 0 when the limit is unknown. */
