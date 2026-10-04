@@ -3310,8 +3310,10 @@ _MTLCommandBuffer_presentDrawable(void *obj) {
     ios_frame_encode_present(0);
   /* Frame generation presents both frames itself (madeira_fg_present). */
   if (mode != 2 && madeira_fg_enabled() &&
-      madeira_fg_present((id<MTLCommandBuffer>)params->handle, (id<CAMetalDrawable>)params->arg))
+      madeira_fg_present((id<MTLCommandBuffer>)params->handle, (id<CAMetalDrawable>)params->arg)) {
+    madeira_log_present_cadence("presentFramegen", 0.0);
     return STATUS_SUCCESS;
+  }
   if ((mode == 1 || mode == 3 || mode == 4) && madeira_present_limiter_enabled()) {
     /* Opt-in precise pacing: hold the producer to the deadline and then ask
      * for the next vblank with no minimum duration, so the cap is the
