@@ -4,6 +4,7 @@
 #include <mach/vm_statistics.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <stdlib.h>
@@ -103,6 +104,29 @@ extern void ios_frame_limiter(unsigned long long ns);
 static _Atomic uint64_t g_madeira_cmdbuf_inflight;
 extern int ios_frame_stats_on;
 extern void ios_frame_pass(unsigned kind, unsigned loads, unsigned stores, unsigned clears);
+
+/* The iOS frame/runtime probes are supplied by Madeira's app image.  A
+ * standalone macOS launch has no app-side provider, so keep the same ABI with
+ * no-op counters instead of making the native Metal bridge depend on iOS
+ * objects. */
+#if !TARGET_OS_IPHONE
+int ios_frame_stats_on;
+volatile int ios_exc_msg_count;
+volatile long long ios_srv_wait_us, ios_srv_wait_req_us;
+volatile int ios_srv_wait_count, ios_srv_wait_timeouts, ios_srv_req_count;
+volatile uint64_t ios_xp_pe_block, ios_xp_pe_len;
+void ios_frame_game_tick(void) {}
+void ios_frame_encode_present(int skipped) { (void)skipped; }
+void ios_frame_drawable_wait(unsigned long long ns) { (void)ns; }
+void ios_frame_gpu(unsigned long long gpu_ns, unsigned long long inflight)
+{ (void)gpu_ns; (void)inflight; }
+void ios_frame_note_display(int panel_hz, int intent_hz, int mode)
+{ (void)panel_hz; (void)intent_hz; (void)mode; }
+void ios_frame_limiter(unsigned long long ns) { (void)ns; }
+void ios_frame_pass(unsigned kind, unsigned loads, unsigned stores, unsigned clears)
+{ (void)kind; (void)loads; (void)stores; (void)clears; }
+void ios_xp_set_role(int role, uint64_t wtid) { (void)role; (void)wtid; }
+#endif
 
 /* Whether THIS caller's [frame] hooks run: only while the instrument is on
  * (ios_frame_stats_on), and -- because this file serves 64-bit callers too --
@@ -318,7 +342,9 @@ _MTLCopyAllDevices(void *obj) {
  * 1GB, never above what Metal recommends. os_proc_available_memory() +
  * phys_footprint gives the real limit, including the Game Mode increase.
  * Documents/madeira-vram-mb.txt overrides the result outright. */
+#if TARGET_OS_IPHONE
 #include <os/proc.h>
+#endif
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 /* The process limit above can be larger than the device's RAM: an iPad with
@@ -349,7 +375,10 @@ static uint64_t madeira_ram_cap(void) {
 /* os_proc_available_memory(), lowered so that footprint + the result stays
  * within the cap. 0 when the limit is unknown. */
 static uint64_t madeira_avail_memory(uint64_t foot) {
-  uint64_t avail = (uint64_t)os_proc_available_memory(), cap = madeira_ram_cap();
+  uint64_t avail = 0, cap = madeira_ram_cap();
+#if TARGET_OS_IPHONE
+  avail = (uint64_t)os_proc_available_memory();
+#endif
   if (avail && cap && foot + avail > cap) {
     static int said;
     if (!said++)
@@ -362,7 +391,13 @@ static uint64_t madeira_avail_memory(uint64_t foot) {
 }
 /* The process limit a budget plans with: min(limit, cap). */
 static uint64_t madeira_mem_limit(uint64_t foot) {
-  uint64_t limit = (uint64_t)os_proc_available_memory() + foot, cap = madeira_ram_cap();
+  uint64_t avail = 0, cap = madeira_ram_cap();
+#if TARGET_OS_IPHONE
+  avail = (uint64_t)os_proc_available_memory();
+#endif
+  /* macOS has no iOS jetsam limit. Use the configured physical-memory cap
+   * when available and otherwise leave the Metal-recommended budget alone. */
+  uint64_t limit = avail ? avail + foot : (cap ? cap : ~0ull);
   if (cap && limit > cap) {
     madeira_avail_memory(foot);   /* logs the first lowering */
     limit = cap;
@@ -3917,6 +3952,45 @@ struct macdrv_functions_t {
   void (*on_main_thread)(dispatch_block_t b);
 };
 
+/* Madeira-SE on macOS loads winemac.drv as a Wine builtin unix library.
+ * Unlike the iOS display shim, that library is not necessarily in the
+ * RTLD_DEFAULT lookup scope.  Resolve its bridge symbols from the concrete
+ * loaded image as a fallback, while retaining the upstream/default lookup
+ * for other hosts and for the iOS shim. */
+static void *madeira_macdrv_handle(void) {
+  static void *handle;
+  char path[PATH_MAX];
+  const char *host_dir;
+  int n;
+
+  if (handle)
+    return handle;
+
+  host_dir = getenv("MADEIRA_SE_HOST_DIR");
+  if (host_dir && *host_dir) {
+    n = snprintf(path, sizeof(path), "%s/dlls/winemac.drv/winemac.so", host_dir);
+    if (n > 0 && (size_t)n < sizeof(path))
+      handle = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
+    if (!handle && n > 0 && (size_t)n < sizeof(path))
+      handle = dlopen(path, RTLD_NOW);
+  }
+  if (!handle)
+    handle = dlopen("winemac.so", RTLD_NOW | RTLD_NOLOAD);
+  if (!handle)
+    handle = dlopen("winemac.so", RTLD_NOW);
+  return handle;
+}
+
+static void *madeira_macdrv_symbol(const char *name) {
+  void *symbol = dlsym(RTLD_DEFAULT, name);
+  void *handle;
+
+  if (symbol)
+    return symbol;
+  handle = madeira_macdrv_handle();
+  return handle ? dlsym(handle, name) : NULL;
+}
+
 static NTSTATUS
 _CreateMetalViewFromHWND(void *obj) {
   struct unixcall_create_metal_view_from_hwnd *params = obj;
@@ -3938,32 +4012,42 @@ _CreateMetalViewFromHWND(void *obj) {
 
   struct macdrv_win_data *(*pfn_get_win_data)(HWND hwnd) = NULL;
   void (*pfn_release_win_data)(struct macdrv_win_data *data) = NULL;
+  macdrv_view (*pfn_get_client_view)(void *hwnd) = NULL;
   macdrv_metal_view (*pfn_macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d) = NULL;
   macdrv_metal_layer (*pfn_macdrv_view_get_metal_layer)(macdrv_metal_view v) = NULL;
 
   struct macdrv_functions_t *macdrv_functions;
-  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
+  if ((macdrv_functions = madeira_macdrv_symbol("macdrv_functions"))) {
     pfn_get_win_data = macdrv_functions->get_win_data;
     pfn_release_win_data = macdrv_functions->release_win_data;
     pfn_macdrv_view_create_metal_view = macdrv_functions->macdrv_view_create_metal_view;
     pfn_macdrv_view_get_metal_layer = macdrv_functions->macdrv_view_get_metal_layer;
   } else {
-    pfn_get_win_data = dlsym(RTLD_DEFAULT, "get_win_data");
-    pfn_release_win_data = dlsym(RTLD_DEFAULT, "release_win_data");
-    pfn_macdrv_view_create_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_create_metal_view");
-    pfn_macdrv_view_get_metal_layer = dlsym(RTLD_DEFAULT, "macdrv_view_get_metal_layer");
+    pfn_get_win_data = madeira_macdrv_symbol("get_win_data");
+    pfn_release_win_data = madeira_macdrv_symbol("release_win_data");
+    pfn_macdrv_view_create_metal_view = madeira_macdrv_symbol("macdrv_view_create_metal_view");
+    pfn_macdrv_view_get_metal_layer = madeira_macdrv_symbol("macdrv_view_get_metal_layer");
+    pfn_get_client_view = madeira_macdrv_symbol("macdrv_get_client_view");
   }
 
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
-    macdrv_metal_view view =
-        pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
+    macdrv_view client_view = win_data ? win_data->client_cocoa_view : NULL;
+    macdrv_metal_view view;
+    if (win_data) {
+      pfn_release_win_data(win_data);
+      win_data = NULL;
+    }
+    if (!client_view && pfn_get_client_view)
+      client_view = pfn_get_client_view((void *)params->hwnd);
+    if (!client_view)
+      return STATUS_SUCCESS;
+    view = pfn_macdrv_view_create_metal_view(client_view, (macdrv_metal_device)params->device);
     params->ret_view = (obj_handle_t)view;
     if (view) {
       params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
     }
-    pfn_release_win_data(win_data);
   }
 
   return STATUS_SUCCESS;
@@ -3981,10 +4065,10 @@ _ReleaseMetalView(void *obj) {
   void (*pfn_macdrv_view_release_metal_view)(macdrv_metal_view v) = NULL;
 
   struct macdrv_functions_t *macdrv_functions;
-  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
+  if ((macdrv_functions = madeira_macdrv_symbol("macdrv_functions"))) {
     pfn_macdrv_view_release_metal_view = macdrv_functions->macdrv_view_release_metal_view;
   } else {
-    pfn_macdrv_view_release_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_release_metal_view");
+    pfn_macdrv_view_release_metal_view = madeira_macdrv_symbol("macdrv_view_release_metal_view");
   }
 
   if (pfn_macdrv_view_release_metal_view)
@@ -6363,7 +6447,11 @@ _d3d9_nop(void *obj) {
 /* madeira-d3d12's shader-converter service: runtime DXIL -> metallib. Defined
  * in research/madeira-d3d12/src/unix/ and compiled into the same static
  * library as the rest of this unix side. */
+#if !TARGET_OS_IPHONE
+static int madeira_ir_convert(void *args) { (void)args; return STATUS_NOT_IMPLEMENTED; }
+#else
 extern int madeira_ir_convert(void *args);
+#endif
 static NTSTATUS _madeira_ir_convert(void *args) { return (NTSTATUS)madeira_ir_convert(args); }
 
 /* The wow64 table must stay the SAME LENGTH as the native one, because the slot

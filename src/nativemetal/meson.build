@@ -1,5 +1,6 @@
 winemetal_src = [
   '../winemetal/winemetal_thunks.c',
+  '../winemetal/wmt_api_census.c',
   '../winemetal/unix/winemetal_unix.c',
   '../winemetal/unix/cache.c',
 ]
@@ -16,7 +17,7 @@ winemetal_ld_args = [
 winemetal_dll = shared_library('winemetal', winemetal_src,
   name_prefix         : '',
   dependencies        : [ airconv_dep_darwin ],
-  include_directories : [ dxmt_include_path, include_directories('.') ],
+  include_directories : [ dxmt_include_path, include_directories('.'), include_directories('../winemetal') ],
   c_args              : ['-ObjC', '-DDXMT_NATIVE=1'],
   link_args           : winemetal_ld_args,
   build_rpath         : '@loader_path/:@loader_path/../../',
